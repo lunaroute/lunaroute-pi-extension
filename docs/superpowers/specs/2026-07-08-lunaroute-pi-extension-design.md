@@ -54,7 +54,7 @@ If none exists and UI is available, it will show a non-blocking warning notifica
 
 > LunaRoute Pi extension loaded, but no provider named `lunaroute` is configured.
 
-If the provider exists, the extension will also check whether LunaRoute auth appears to be configured without reading or displaying any secret value:
+If the provider exists, the extension will also check whether LunaRoute auth appears to be configured using presence checks only. The extension may check whether API key configuration exists, but must never print, log, display, or store API key values:
 
 1. `process.env.LUNAROUTE_API_KEY` is set, or
 2. `ctx.modelRegistry.getProviderAuthStatus("lunaroute").configured` is true.
@@ -85,7 +85,7 @@ A new UUID on `/reload`, `/new`, `/resume`, or process restart is acceptable for
 
 - Header values are generated from safe inputs: Pi version and UUID.
 - If UUID generation fails, the extension should fall back to a sufficiently unique timestamp/random value or surface a clear warning.
-- The extension reads no secrets and stores no secrets.
+- The extension may perform API key presence checks, but must never print, log, display, or store API key values.
 - The missing-provider warning is best-effort and non-blocking.
 
 ## Package Layout
@@ -145,7 +145,7 @@ Manual smoke test:
 2. Load the extension with `pi -e .` or install it as a Pi package.
 3. Verify LunaRoute receives the three expected headers.
 4. Temporarily remove/rename the provider and confirm the missing-provider warning appears.
-5. Temporarily remove auth configuration and unset `LUNAROUTE_API_KEY`, then confirm the missing-API-key warning appears without displaying any secret value.
+5. Temporarily remove auth configuration and unset `LUNAROUTE_API_KEY`, then confirm the missing-API-key warning appears without printing, logging, displaying, or storing any secret value.
 
 ## Out of Scope for v1
 
