@@ -50,12 +50,13 @@ describe("Pi extension wiring", () => {
     vi.unstubAllEnvs();
   });
 
-  test("registers a header-only override for provider lunaroute", () => {
+  test("registers an override for provider lunaroute with standardized env auth and headers", () => {
     const { pi, registerProvider } = fakePi();
 
     registerLunarouteExtension(pi, "0.80.3", {}, "session-123");
 
     expect(registerProvider).toHaveBeenCalledWith("lunaroute", {
+      apiKey: "$LUNAROUTE_API_KEY",
       headers: {
         "lunaroute-agent": "pi/0.80.3",
         "x-lunaroute-session": "session-123",

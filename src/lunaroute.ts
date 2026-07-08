@@ -51,6 +51,5 @@ export function missingApiKeyWarning(): string {
     "1. Environment variable: export LUNAROUTE_API_KEY=lr_...",
     "   and in ~/.pi/agent/models.json use \"apiKey\": \"$LUNAROUTE_API_KEY\".",
     "2. Stored Pi credential for provider \"lunaroute\".",
-    "3. Direct ~/.pi/agent/models.json apiKey value, supported but less preferred.",
   ].join("\n");
 }

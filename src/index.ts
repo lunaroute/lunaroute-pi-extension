@@ -16,6 +16,7 @@ export function registerLunarouteExtension(
   sessionId = generateSessionId(),
 ): void {
   pi.registerProvider(LUNAROUTE_PROVIDER, {
+    apiKey: "$LUNAROUTE_API_KEY",
     headers: buildLunarouteHeaders(version, sessionId),
   });
 

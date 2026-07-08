@@ -69,6 +69,7 @@ describe("lunaroute helpers", () => {
     expect(warning).toContain("export LUNAROUTE_API_KEY=lr_...");
     expect(warning).toContain("\"apiKey\": \"$LUNAROUTE_API_KEY\"");
     expect(warning).toContain("Stored Pi credential");
+    expect(warning).not.toContain("Direct ~/.pi/agent/models.json apiKey value");
     expect(warning).not.toContain("lr_test");
   });
 });

@@ -4,7 +4,7 @@
 
 **Goal:** Build a closed-source-compatible Pi package that adds LunaRoute attribution and session headers to only the `lunaroute` provider, with non-blocking setup warnings.
 
-**Architecture:** The extension is a standalone TypeScript Pi package. Pure helper functions build headers, generate session IDs, and decide whether warnings are needed; `src/index.ts` wires those helpers into Pi with `pi.registerProvider("lunaroute", { headers })` and a `session_start` warning check. The package does not create or discover models and does not change `User-Agent`.
+**Architecture:** The extension is a standalone TypeScript Pi package. Pure helper functions build headers, generate session IDs, and decide whether warnings are needed; `src/index.ts` wires those helpers into Pi with `pi.registerProvider("lunaroute", { apiKey: "$LUNAROUTE_API_KEY", headers })` and a `session_start` warning check. The package does not create or discover models and does not change `User-Agent`.
 
 **Tech Stack:** TypeScript, Node.js 22+, Pi extension API (`@earendil-works/pi-coding-agent`), Vitest, npm.
 
@@ -17,6 +17,7 @@
 - Send `lunaroute-agent` as `pi/<pi-version>` using `VERSION` from `@earendil-works/pi-coding-agent`.
 - Warn non-blockingly when provider `lunaroute` is missing.
 - Warn non-blockingly when provider `lunaroute` exists but neither `LUNAROUTE_API_KEY` nor Pi provider auth appears configured.
+- Standardize v1 request auth to Pi stored auth for provider `lunaroute` or `apiKey: "$LUNAROUTE_API_KEY"`; arbitrary existing `models.json` `apiKey` values for `lunaroute` do not need to be preserved.
 - Never read, print, log, or store API key values.
 - Package may be closed-source; use restricted npm publishing metadata, not `"private": true`.
 
@@ -278,7 +279,6 @@ export function missingApiKeyWarning(): string {
     "1. Environment variable: export LUNAROUTE_API_KEY=lr_...",
     "   and in ~/.pi/agent/models.json use \"apiKey\": \"$LUNAROUTE_API_KEY\".",
     "2. Stored Pi credential for provider \"lunaroute\".",
-    "3. Direct ~/.pi/agent/models.json apiKey value, supported but less preferred.",
   ].join("\n");
 }
 ```
@@ -385,12 +385,13 @@ describe("Pi extension wiring", () => {
     vi.unstubAllEnvs();
   });
 
-  test("registers a header-only override for provider lunaroute", () => {
+  test("registers an override for provider lunaroute with standardized env auth and headers", () => {
     const { pi, registerProvider } = fakePi();
 
     registerLunarouteExtension(pi, "0.80.3", {}, "session-123");
 
     expect(registerProvider).toHaveBeenCalledWith("lunaroute", {
+      apiKey: "$LUNAROUTE_API_KEY",
       headers: {
         "lunaroute-agent": "pi/0.80.3",
         "x-lunaroute-session": "session-123",
@@ -532,6 +533,7 @@ export function registerLunarouteExtension(
   sessionId = generateSessionId(),
 ): void {
   pi.registerProvider(LUNAROUTE_PROVIDER, {
+    apiKey: "$LUNAROUTE_API_KEY",
     headers: buildLunarouteHeaders(version, sessionId),
   });
 
@@ -682,7 +684,7 @@ Then reference it from `~/.pi/agent/models.json`:
 "apiKey": "$LUNAROUTE_API_KEY"
 ```
 
-Alternatively, store a Pi credential for provider `lunaroute`, or put a direct `apiKey` value in `models.json`. Direct `models.json` secrets are supported by Pi but are less preferred than environment variables or Pi auth storage.
+Alternatively, store a Pi credential for provider `lunaroute`. V1 standardizes request auth to Pi stored auth or `LUNAROUTE_API_KEY`; arbitrary existing direct `apiKey` values in the `lunaroute` `models.json` provider config are not preserved by the extension override.
 
 ## Warnings
 

@@ -26,7 +26,7 @@ The extension will:
 
 1. Import `VERSION` from `@earendil-works/pi-coding-agent`.
 2. Generate a UUID for the current Pi session/runtime.
-3. Register a header-only override for provider `lunaroute`:
+3. Register an override for provider `lunaroute` that sets `apiKey: "$LUNAROUTE_API_KEY"` plus these headers:
 
 ```http
 lunaroute-agent: pi/<pi-version>
@@ -34,7 +34,7 @@ x-lunaroute-session: <session-uuid>
 lunaroute-session-id: <session-uuid>
 ```
 
-The extension will not register or discover models in v1. It relies on the user's existing `lunaroute` provider definition, such as the one in `~/.pi/agent/models.json`.
+The extension will not register or discover models in v1. It relies on the user's existing `lunaroute` provider definition for models, but standardizes request auth to either Pi stored auth for provider `lunaroute` or the `LUNAROUTE_API_KEY` environment variable. Arbitrary existing `models.json` `apiKey` values for `lunaroute` are not preserved by v1.
 
 ## Provider Scope
 
@@ -68,7 +68,6 @@ Set one of:
 1. Environment variable: export LUNAROUTE_API_KEY=lr_...
    and in ~/.pi/agent/models.json use "apiKey": "$LUNAROUTE_API_KEY".
 2. Stored Pi credential for provider "lunaroute".
-3. Direct ~/.pi/agent/models.json apiKey value, supported but less preferred.
 ```
 
 The warnings do not block startup or requests. v1 does not create provider models automatically and does not write credentials.
