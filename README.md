@@ -25,14 +25,6 @@ lunaroute-session-id: <session-uuid>
 
 The same generated session UUID is used for both session headers during one extension runtime.
 
-## What it does not do
-
-- It does **not** change `User-Agent`.
-- It does **not** target `lunaroute11111` or any other test provider.
-- It does **not** target generic OpenAI-compatible providers.
-- It does **not** create, fetch, or modify your LunaRoute model list.
-- It does **not** print, log, display, or store API key values.
-
 ## Quick start
 
 Install dependencies for local development or local loading:
