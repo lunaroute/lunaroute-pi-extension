@@ -19,7 +19,7 @@ The same generated session UUID is used for both session headers during one exte
 - It does not change `User-Agent`.
 - It does not target `lunaroute11111` or any other test provider.
 - It does not create or discover LunaRoute models.
-- It does not read, print, log, or store API key values.
+- It may check whether API key configuration exists, but it does not print, log, display, or store API key values.
 
 ## Requirements
 

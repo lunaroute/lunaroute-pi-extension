@@ -18,7 +18,7 @@
 - Warn non-blockingly when provider `lunaroute` is missing.
 - Warn non-blockingly when provider `lunaroute` exists but neither `LUNAROUTE_API_KEY` nor Pi provider auth appears configured.
 - Standardize v1 request auth to Pi stored auth for provider `lunaroute` or `apiKey: "$LUNAROUTE_API_KEY"`; arbitrary existing `models.json` `apiKey` values for `lunaroute` do not need to be preserved.
-- Never read, print, log, or store API key values.
+- API key presence checks are allowed; never print, log, display, or store API key values.
 - Package may be closed-source; use restricted npm publishing metadata, not `"private": true`.
 
 ---
@@ -629,7 +629,7 @@ The same generated session UUID is used for both session headers during one exte
 - It does not change `User-Agent`.
 - It does not target `lunaroute11111` or any other test provider.
 - It does not create or discover LunaRoute models.
-- It does not read, print, log, or store API key values.
+- It may check whether API key configuration exists, but it does not print, log, display, or store API key values.
 
 ## Requirements
 

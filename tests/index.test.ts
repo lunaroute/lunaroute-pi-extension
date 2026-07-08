@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { LUNAROUTE_PROVIDER, missingApiKeyWarning, missingProviderWarning } from "../src/lunaroute.js";
-import { registerLunarouteExtension } from "../src/index.js";
+import lunarouteExtension, { registerLunarouteExtension } from "../src/index.js";
 
 type SessionStartHandler = (event: unknown, ctx: FakeContext) => void | Promise<void>;
 
@@ -48,6 +48,34 @@ function fakeContext(overrides: Partial<FakeContext> = {}): FakeContext {
 describe("Pi extension wiring", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  test("default export registers lunaroute provider with env auth and generated session headers", () => {
+    const { pi, registerProvider } = fakePi();
+
+    lunarouteExtension(pi);
+
+    expect(registerProvider).toHaveBeenCalledTimes(1);
+    expect(registerProvider).toHaveBeenCalledWith("lunaroute", expect.any(Object));
+
+    const [, config] = registerProvider.mock.calls[0] as [
+      string,
+      {
+        apiKey: string;
+        headers: Record<string, string>;
+        models?: unknown;
+      },
+    ];
+    const sessionHeader = config.headers["x-lunaroute-session"];
+
+    expect(config.apiKey).toBe("$LUNAROUTE_API_KEY");
+    expect(config).not.toHaveProperty("models");
+    expect(config.headers["lunaroute-agent"]).toEqual(expect.stringMatching(/^pi\/\S+$/));
+    expect(sessionHeader).toEqual(expect.any(String));
+    expect(sessionHeader).not.toBe("");
+    expect(config.headers["lunaroute-session-id"]).toBe(sessionHeader);
+    expect(config.headers).not.toHaveProperty("User-Agent");
+    expect(config.headers).not.toHaveProperty("user-agent");
   });
 
   test("registers an override for provider lunaroute with standardized env auth and headers", () => {
