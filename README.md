@@ -146,16 +146,6 @@ Package dry run:
 npm pack --dry-run
 ```
 
-## Publishing
-
-This package is MIT licensed and can still be published as a restricted npm package.
-
-```bash
-npm publish --access restricted
-```
-
-Do not set `"private": true` if publishing to npm; that flag prevents publishing.
-
 ## License
 
 MIT License. See [LICENSE](./LICENSE).
