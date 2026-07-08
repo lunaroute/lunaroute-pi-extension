@@ -1,10 +1,21 @@
-# LunaRoute Pi Extension
+# LunaRoute for Pi
 
-Pi extension for LunaRoute request attribution and session affinity.
+Make Pi easy to recognize, route, and troubleshoot when it talks to LunaRoute.
 
-## What it does
+This Pi extension adds LunaRoute-friendly request attribution and session headers to your Pi traffic. If you use Pi with a LunaRoute provider, this helps LunaRoute understand that requests are coming from Pi, which Pi version is being used, and which requests belong to the same Pi session.
 
-When loaded in Pi, this extension targets only the provider named `lunaroute` and adds these headers to provider requests:
+## Why install it?
+
+Without this extension, Pi may look like a generic OpenAI SDK client when it calls LunaRoute. With this extension, LunaRoute receives clear client signals:
+
+- **Better attribution** — LunaRoute can identify requests as `pi/<version>` instead of only seeing the underlying SDK.
+- **Stable session routing** — all requests in one Pi runtime share a generated session ID for LunaRoute affinity/routing features.
+- **Cleaner diagnostics** — logs, usage analysis, and future LunaRoute features can distinguish Pi traffic from other clients.
+- **No secret handling** — the extension may check whether auth is configured, but it does not print, log, display, or store API key values.
+
+## What it sends
+
+For the Pi provider named exactly `lunaroute`, the extension adds:
 
 ```http
 lunaroute-agent: pi/<pi-version>
@@ -16,14 +27,37 @@ The same generated session UUID is used for both session headers during one exte
 
 ## What it does not do
 
-- It does not change `User-Agent`.
-- It does not target `lunaroute11111` or any other test provider.
-- It does not create or discover LunaRoute models.
-- It may check whether API key configuration exists, but it does not print, log, display, or store API key values.
+- It does **not** change `User-Agent`.
+- It does **not** target `lunaroute11111` or any other test provider.
+- It does **not** target generic OpenAI-compatible providers.
+- It does **not** create, fetch, or modify your LunaRoute model list.
+- It does **not** print, log, display, or store API key values.
 
-## Requirements
+## Quick start
 
-Configure a Pi provider named exactly `lunaroute`, usually in `~/.pi/agent/models.json`.
+Install dependencies for local development or local loading:
+
+```bash
+npm install
+npm run check
+pi -e .
+```
+
+For normal use after publishing:
+
+```bash
+pi install npm:@lunaroute/pi-extension
+```
+
+Or from a git source:
+
+```bash
+pi install git:github.com/lunaroute/lunaroute-pi-extension
+```
+
+## Configure LunaRoute in Pi
+
+You need a Pi provider named exactly `lunaroute`, usually in `~/.pi/agent/models.json`.
 
 Example:
 
@@ -62,7 +96,7 @@ Example:
 
 ## API key setup
 
-Preferred environment-variable setup:
+Preferred setup:
 
 ```bash
 export LUNAROUTE_API_KEY=lr_...
@@ -74,18 +108,31 @@ Then reference it from `~/.pi/agent/models.json`:
 "apiKey": "$LUNAROUTE_API_KEY"
 ```
 
-Alternatively, store a Pi credential for provider `lunaroute`. V1 standardizes request auth to Pi stored auth or `LUNAROUTE_API_KEY`; arbitrary existing direct `apiKey` values in the `lunaroute` `models.json` provider config are not preserved by the extension override.
+You can also store a Pi credential for provider `lunaroute`.
 
-## Warnings
+Important: this extension standardizes LunaRoute auth to either Pi stored auth or `LUNAROUTE_API_KEY`. Arbitrary existing direct `apiKey` values in the `lunaroute` `models.json` provider config are not preserved by the extension override.
 
-On session start, the extension shows non-blocking warnings when:
+## Helpful startup warnings
+
+The extension shows non-blocking warnings when:
 
 - no provider named `lunaroute` is configured, or
 - provider `lunaroute` exists but neither `LUNAROUTE_API_KEY` nor Pi provider auth appears configured.
 
-Warnings do not block Pi startup or requests.
+Warnings are informational only. They do not block Pi startup or requests.
 
-## Local development
+## Who is this for?
+
+Install this if you:
+
+- use Pi with LunaRoute as a model provider,
+- want LunaRoute dashboards/logs to distinguish Pi traffic,
+- want LunaRoute to keep a Pi runtime’s requests grouped by session, or
+- are testing LunaRoute routing/attribution features from Pi.
+
+You probably do not need this if you do not use LunaRoute from Pi.
+
+## Development
 
 ```bash
 npm install
@@ -93,14 +140,22 @@ npm run check
 pi -e .
 ```
 
-## Private publishing
+Package dry run:
 
-This package is intended to be publishable as a closed/private npm package.
+```bash
+npm pack --dry-run
+```
 
-Use restricted scoped npm publishing:
+## Publishing
+
+This package is MIT licensed and can still be published as a restricted npm package.
 
 ```bash
 npm publish --access restricted
 ```
 
 Do not set `"private": true` if publishing to npm; that flag prevents publishing.
+
+## License
+
+MIT License. See [LICENSE](./LICENSE).

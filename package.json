@@ -8,13 +8,14 @@
     "lunaroute",
     "pi-extension"
   ],
-  "license": "UNLICENSED",
+  "license": "MIT",
   "publishConfig": {
     "access": "restricted"
   },
   "files": [
     "src",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
