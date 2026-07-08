@@ -1,0 +1,38 @@
+{
+  "name": "@lunaroute/pi-extension",
+  "version": "0.1.0",
+  "description": "Pi extension for LunaRoute request attribution and session headers.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "lunaroute",
+    "pi-extension"
+  ],
+  "license": "UNLICENSED",
+  "publishConfig": {
+    "access": "restricted"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0"
+  }
+}
