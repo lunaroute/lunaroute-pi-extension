@@ -1,7 +1,7 @@
 {
   "name": "@lunaroute/pi-extension",
-  "version": "0.1.0",
-  "description": "Pi extension for LunaRoute request attribution and session headers.",
+  "version": "0.2.0",
+  "description": "Pi extension for LunaRoute: login, model sync, and request attribution.",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -28,10 +28,12 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": ">=0.84.1",
+    "@earendil-works/pi-ai": ">=0.84.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-coding-agent": "^0.84.1",
+    "@earendil-works/pi-ai": "^0.84.1",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.0"
