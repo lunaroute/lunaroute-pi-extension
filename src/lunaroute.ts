@@ -118,8 +118,8 @@ export function mapCatalogEntry(entry: GatewayModelObject): CatalogMappingResult
     contextWindow: entry.context_window ?? 0,
     maxTokens: entry.max_output_tokens ?? 0,
   };
-  if (entry.pi?.thinkingLevelMap) model.thinkingLevelMap = entry.pi.thinkingLevelMap;
-  if (entry.pi?.compat) model.compat = entry.pi.compat;
+  if (reasoning && entry.pi?.thinkingLevelMap) model.thinkingLevelMap = entry.pi.thinkingLevelMap;
+  if (reasoning && entry.pi?.compat) model.compat = entry.pi.compat;
   return { ok: true, model };
 }
 

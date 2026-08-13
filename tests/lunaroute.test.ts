@@ -169,6 +169,22 @@ describe("lunaroute v2 helpers", () => {
     expect(result.model.maxTokens).toBe(0);
   });
 
+  test("mapCatalogEntry does not attach pi block fields to a non-reasoning model", () => {
+    const result = mapCatalogEntry({
+      id: "chat-with-stray-pi",
+      capabilities: { reasoning: false },
+      pi: {
+        thinkingLevelMap: { off: null, high: "high" },
+        compat: { thinkingFormat: "zai", maxTokensField: "max_tokens", supportsReasoningEffort: false },
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.reasoning).toBe(false);
+    expect(result.model.thinkingLevelMap).toBeUndefined();
+    expect(result.model.compat).toBeUndefined();
+  });
+
   test("warning text helpers do not leak secrets", () => {
     expect(missingPiBlockWarning("glm-x")).toContain("glm-x");
     expect(missingPiBlockWarning("glm-x")).not.toContain("lr_");
