@@ -2,3 +2,5 @@
 
 # Local worktrees
 .worktrees/
+# roborev snapshots
+/.roborev/
