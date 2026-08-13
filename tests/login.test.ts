@@ -5,6 +5,7 @@ import {
   loginWithBrowser,
   loginWithPaste,
   lunarouteLogin,
+  startLoopbackServer,
   type LoopbackServer,
 } from "../src/login.js";
 
@@ -28,11 +29,12 @@ function fakeLoopback(code: string, state: string): LoopbackServer {
   };
 }
 
+beforeEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
+
 describe("lunaroute login", () => {
-  beforeEach(() => {
-    vi.unstubAllEnvs();
-    vi.unstubAllGlobals();
-  });
 
   test("paste path prompts for a secret (plain text) and returns the key", async () => {
     const cb = fakeCallbacks({ onSelect: vi.fn(async () => "paste"), onPrompt: vi.fn(async () => "lr_secret") });
@@ -144,5 +146,31 @@ describe("lunaroute login", () => {
       json: async () => ({ error: { code: "INVALID_CODE", message: "bad code" } }),
     })));
     await expect(exchangeCode("http://api", { code: "c", verifier: "v", label: "h" })).rejects.toThrow(/INVALID_CODE/);
+  });
+});
+
+describe("startLoopbackServer (real node:http)", () => {
+  test("resolves /callback?code=&state= and returns the success HTML", async () => {
+    const server = await startLoopbackServer();
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/callback?code=abc&state=xyz`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("text/html");
+      const body = await res.text();
+      expect(body).toContain("LunaRoute authorized.");
+      await expect(server.waitForCallback()).resolves.toEqual({ code: "abc", state: "xyz" });
+    } finally {
+      server.close();
+    }
+  });
+
+  test("returns 404 for a non-/callback path", async () => {
+    const server = await startLoopbackServer();
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/favicon.ico`);
+      expect(res.status).toBe(404);
+    } finally {
+      server.close();
+    }
   });
 });

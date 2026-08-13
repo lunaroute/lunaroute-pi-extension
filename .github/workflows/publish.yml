@@ -1,0 +1,46 @@
+name: publish
+
+# Tag-driven publish using npm Trusted Publishing (OIDC) + provenance.
+# No NPM_TOKEN secret: `id-token: write` lets npm CLI mint short-lived
+# credentials bound to this workflow + package.
+#
+# Prerequisite (one-time, out of band): add a Trusted Publisher entry on
+# https://npmjs.com for @lunaroute/pi-extension pointing at
+#   org/user: lunaroute
+#   repo:     lunaroute-pi-extension
+#   workflow: publish.yml
+#   allowed:  npm publish
+#
+# The very first publish (v0.2.0) must be done locally with
+#   `npm publish --access restricted --provenance`
+# because Trusted Publishing requires the package to already exist on npm.
+# After that, all publishes go through this workflow.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          # npm CLI >=11.5.1 is required for Trusted Publishing; setup-node@v4
+          # ships a recent npm that satisfies this on Node 22.
+      - run: npm ci
+      # Gate: a tag that fails tests does not ship.
+      - run: npm run check
+      # Provenance attests against the public repo URL (package.json repository).
+      # `--access restricted` keeps the scoped package private.
+      # Prerelease versions (0.2.0-beta.1) auto-publish to the `beta` dist-tag;
+      # stable (0.2.0) to `latest`.
+      - run: npm publish --provenance --access restricted

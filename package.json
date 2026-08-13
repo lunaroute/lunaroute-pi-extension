@@ -9,6 +9,10 @@
     "pi-extension"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lunaroute/lunaroute-pi-extension.git"
+  },
   "publishConfig": {
     "access": "restricted"
   },
