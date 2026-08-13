@@ -1,193 +1,97 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { LUNAROUTE_PROVIDER, missingApiKeyWarning, missingProviderWarning } from "../src/lunaroute.js";
-import lunarouteExtension, { registerLunarouteExtension } from "../src/index.js";
+import { LUNAROUTE_PROVIDER, firstRunHint } from "../src/lunaroute.js";
+import lunarouteExtension from "../src/index.js";
 
 type SessionStartHandler = (event: unknown, ctx: FakeContext) => void | Promise<void>;
 
 type FakeContext = {
   hasUI: boolean;
   modelRegistry: {
-    getAll: () => Array<{ provider: string; id: string }>;
-    getProviderAuthStatus: (provider: string) => { configured: boolean };
+    getProviderAuthStatus: (provider: string) => { configured: boolean } | undefined;
   };
-  ui: {
-    notify: ReturnType<typeof vi.fn>;
-  };
+  ui: { notify: ReturnType<typeof vi.fn> };
 };
 
 function fakePi() {
   const handlers = new Map<string, SessionStartHandler>();
   const registerProvider = vi.fn();
-  const on = vi.fn((eventName: string, handler: SessionStartHandler) => {
-    handlers.set(eventName, handler);
-  });
-
-  return {
-    pi: { registerProvider, on } as unknown as ExtensionAPI,
-    registerProvider,
-    on,
-    handlers,
-  };
+  const on = vi.fn((name: string, handler: SessionStartHandler) => handlers.set(name, handler));
+  return { pi: { registerProvider, on } as unknown as ExtensionAPI, registerProvider, on, handlers };
 }
 
 function fakeContext(overrides: Partial<FakeContext> = {}): FakeContext {
   return {
     hasUI: true,
-    modelRegistry: {
-      getAll: () => [{ provider: LUNAROUTE_PROVIDER, id: "glm-5.2" }],
-      getProviderAuthStatus: () => ({ configured: true }),
-    },
-    ui: {
-      notify: vi.fn(),
-    },
+    modelRegistry: { getProviderAuthStatus: () => ({ configured: false }) },
+    ui: { notify: vi.fn() },
     ...overrides,
   };
 }
 
-describe("Pi extension wiring", () => {
+describe("pi extension v2 wiring", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
   });
 
-  test("default export registers lunaroute provider with env auth and generated session headers", () => {
+  test("registers the lunaroute provider with identity, auth, headers, refreshModels, and empty models", () => {
     const { pi, registerProvider } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
 
     lunarouteExtension(pi);
 
     expect(registerProvider).toHaveBeenCalledTimes(1);
-    expect(registerProvider).toHaveBeenCalledWith("lunaroute", expect.any(Object));
-
-    const [, config] = registerProvider.mock.calls[0] as [
-      string,
-      {
-        apiKey: string;
-        headers: Record<string, string>;
-        models?: unknown;
-      },
-    ];
-    const sessionHeader = config.headers["x-lunaroute-session"];
-
-    expect(config.apiKey).toBe("$LUNAROUTE_API_KEY");
-    expect(config).not.toHaveProperty("models");
-    expect(config.headers["lunaroute-agent"]).toEqual(expect.stringMatching(/^pi\/\S+$/));
-    expect(sessionHeader).toEqual(expect.any(String));
-    expect(sessionHeader).not.toBe("");
-    expect(config.headers["lunaroute-session-id"]).toBe(sessionHeader);
-    expect(config.headers).not.toHaveProperty("User-Agent");
-    expect(config.headers).not.toHaveProperty("user-agent");
+    expect(registerProvider).toHaveBeenCalledWith(LUNAROUTE_PROVIDER, expect.any(Object));
+    const [, config] = registerProvider.mock.calls[0] as [string, Record<string, unknown>];
+    expect(config.name).toBe("LunaRoute");
+    expect(config.baseUrl).toBe("http://gw/v1");
+    expect(config.api).toBe("openai-completions");
+    expect(config.authHeader).toBe(true);
+    expect(config.models).toEqual([]);
+    expect(config.oauth).toBeDefined();
+    expect(typeof config.refreshModels).toBe("function");
   });
 
-  test("registers an override for provider lunaroute with standardized env auth and headers", () => {
+  test("attribution headers share one session id and omit User-Agent", () => {
     const { pi, registerProvider } = fakePi();
-
-    registerLunarouteExtension(pi, "0.80.3", {}, "session-123");
-
-    expect(registerProvider).toHaveBeenCalledWith("lunaroute", {
-      apiKey: "$LUNAROUTE_API_KEY",
-      headers: {
-        "lunaroute-agent": "pi/0.80.3",
-        "x-lunaroute-session": "session-123",
-        "lunaroute-session-id": "session-123",
-      },
-    });
-  });
-
-  test("does not register models or User-Agent", () => {
-    const { pi, registerProvider } = fakePi();
-
-    registerLunarouteExtension(pi, "0.80.3", {}, "session-123");
-
+    lunarouteExtension(pi);
     const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
-    expect(config).not.toHaveProperty("models");
-    expect(config.headers).not.toHaveProperty("User-Agent");
-    expect(config.headers).not.toHaveProperty("user-agent");
+    const headers = config.headers as Record<string, string>;
+    expect(headers["lunaroute-agent"]).toEqual(expect.stringMatching(/^pi\/\S+$/));
+    expect(headers["x-lunaroute-session"]).toBe(headers["lunaroute-session-id"]);
+    expect(headers["x-lunaroute-session"]).not.toBe("");
+    expect(headers).not.toHaveProperty("User-Agent");
+    expect(headers).not.toHaveProperty("user-agent");
   });
 
   test("registers a session_start handler", () => {
     const { pi, on, handlers } = fakePi();
-
-    registerLunarouteExtension(pi, "0.80.3", {}, "session-123");
-
+    lunarouteExtension(pi);
     expect(on).toHaveBeenCalledWith("session_start", expect.any(Function));
     expect(handlers.has("session_start")).toBe(true);
   });
 
-  test("warns when provider lunaroute is missing", async () => {
+  test("session_start notifies the first-run hint when no credential is configured", async () => {
     const { pi, handlers } = fakePi();
-    registerLunarouteExtension(pi, "0.80.3", {}, "session-123");
-    const ctx = fakeContext({
-      modelRegistry: {
-        getAll: () => [{ provider: "lunaroute11111", id: "test" }],
-        getProviderAuthStatus: () => ({ configured: false }),
-      },
-    });
-
+    lunarouteExtension(pi);
+    const ctx = fakeContext({ modelRegistry: { getProviderAuthStatus: () => ({ configured: false }) } });
     await handlers.get("session_start")?.({}, ctx);
-
-    expect(ctx.ui.notify).toHaveBeenCalledWith(missingProviderWarning(), "warning");
-    expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(firstRunHint(), "info");
   });
 
-  test("warns when provider exists but auth is missing", async () => {
+  test("session_start is silent when a credential is configured", async () => {
     const { pi, handlers } = fakePi();
-    registerLunarouteExtension(pi, "0.80.3", {}, "session-123");
-    const ctx = fakeContext({
-      modelRegistry: {
-        getAll: () => [{ provider: "lunaroute", id: "glm-5.2" }],
-        getProviderAuthStatus: () => ({ configured: false }),
-      },
-    });
-
+    lunarouteExtension(pi);
+    const ctx = fakeContext({ modelRegistry: { getProviderAuthStatus: () => ({ configured: true }) } });
     await handlers.get("session_start")?.({}, ctx);
-
-    expect(ctx.ui.notify).toHaveBeenCalledWith(missingApiKeyWarning(), "warning");
-    expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
-  });
-
-  test("does not warn for missing auth when LUNAROUTE_API_KEY env var exists", async () => {
-    const { pi, handlers } = fakePi();
-    registerLunarouteExtension(pi, "0.80.3", { LUNAROUTE_API_KEY: "lr_secret" }, "session-123");
-    const ctx = fakeContext({
-      modelRegistry: {
-        getAll: () => [{ provider: "lunaroute", id: "glm-5.2" }],
-        getProviderAuthStatus: () => ({ configured: false }),
-      },
-    });
-
-    await handlers.get("session_start")?.({}, ctx);
-
     expect(ctx.ui.notify).not.toHaveBeenCalled();
   });
 
-  test("does not warn for missing auth when Pi auth status is configured", async () => {
+  test("session_start is silent when UI is unavailable", async () => {
     const { pi, handlers } = fakePi();
-    registerLunarouteExtension(pi, "0.80.3", {}, "session-123");
-    const ctx = fakeContext({
-      modelRegistry: {
-        getAll: () => [{ provider: "lunaroute", id: "glm-5.2" }],
-        getProviderAuthStatus: () => ({ configured: true }),
-      },
-    });
-
+    lunarouteExtension(pi);
+    const ctx = fakeContext({ hasUI: false, modelRegistry: { getProviderAuthStatus: () => ({ configured: false }) } });
     await handlers.get("session_start")?.({}, ctx);
-
-    expect(ctx.ui.notify).not.toHaveBeenCalled();
-  });
-
-  test("does not notify when UI is unavailable", async () => {
-    const { pi, handlers } = fakePi();
-    registerLunarouteExtension(pi, "0.80.3", {}, "session-123");
-    const ctx = fakeContext({
-      hasUI: false,
-      modelRegistry: {
-        getAll: () => [],
-        getProviderAuthStatus: () => ({ configured: false }),
-      },
-    });
-
-    await handlers.get("session_start")?.({}, ctx);
-
     expect(ctx.ui.notify).not.toHaveBeenCalled();
   });
 });

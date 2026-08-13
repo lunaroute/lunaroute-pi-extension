@@ -1,42 +1,33 @@
 import { VERSION, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   LUNAROUTE_PROVIDER,
-  buildLunarouteHeaders,
+  buildAttributionHeaders,
+  firstRunHint,
   generateSessionId,
-  hasLunarouteAuth,
-  hasLunarouteProvider,
-  missingApiKeyWarning,
-  missingProviderWarning,
+  resolveRoutingUrl,
 } from "./lunaroute.js";
+import { lunarouteOAuth } from "./login.js";
+import { createRefreshModels } from "./discovery.js";
 
-export function registerLunarouteExtension(
-  pi: ExtensionAPI,
-  version: string,
-  env: NodeJS.ProcessEnv,
-  sessionId = generateSessionId(),
-): void {
+export default function lunarouteExtension(pi: ExtensionAPI): void {
+  const sessionId = generateSessionId();
+
   pi.registerProvider(LUNAROUTE_PROVIDER, {
-    apiKey: "$LUNAROUTE_API_KEY",
-    headers: buildLunarouteHeaders(version, sessionId),
+    name: "LunaRoute",
+    baseUrl: resolveRoutingUrl(process.env),
+    api: "openai-completions",
+    authHeader: true,
+    headers: buildAttributionHeaders(VERSION, sessionId),
+    oauth: lunarouteOAuth,
+    refreshModels: createRefreshModels(process.env),
+    models: [],
   });
 
   pi.on("session_start", (_event, ctx) => {
-    const hasProvider = hasLunarouteProvider(ctx.modelRegistry.getAll());
-
-    if (!hasProvider) {
-      if (ctx.hasUI) {
-        ctx.ui.notify(missingProviderWarning(), "warning");
-      }
-      return;
-    }
-
-    const authStatus = ctx.modelRegistry.getProviderAuthStatus(LUNAROUTE_PROVIDER);
-    if (!hasLunarouteAuth(env, authStatus) && ctx.hasUI) {
-      ctx.ui.notify(missingApiKeyWarning(), "warning");
+    if (!ctx.hasUI) return;
+    const status = ctx.modelRegistry.getProviderAuthStatus(LUNAROUTE_PROVIDER);
+    if (!status?.configured) {
+      ctx.ui.notify(firstRunHint(), "info");
     }
   });
-}
-
-export default function lunarouteExtension(pi: ExtensionAPI): void {
-  registerLunarouteExtension(pi, VERSION, process.env);
 }

@@ -1,0 +1,62 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+      - name: Assert npm pack file list
+        run: |
+          set -euo pipefail
+          # The packed file list must be exactly these 7 files — no test files,
+          # no missing source files. Catches a `files`-allowlist regression or
+          # a dropped/added source file.
+          expected='LICENSE
+          README.md
+          package.json
+          src/discovery.ts
+          src/index.ts
+          src/login.ts
+          src/lunaroute.ts'
+
+          # `npm pack --dry-run` prints `npm notice <size> <path>`; the path is
+          # the last field. Filter to the file paths we care about (skip the
+          # version/name/tarball/integrity notices that also appear).
+          actual="$(npm pack --dry-run 2>&1 \
+            | awk '/^npm notice/ && NF>=4 { print $NF }' \
+            | grep -E '^(src/|LICENSE$|README\.md$|package\.json$)' \
+            | sort -u)"
+
+          echo "--- expected ---"; printf '%s\n' "$expected" | sort -u
+          echo "--- actual ---";   printf '%s\n' "$actual"
+
+          if ! diff -u <(printf '%s\n' "$expected" | sort -u) <(printf '%s\n' "$actual"); then
+            echo "ERROR: npm pack file list does not match the expected 7 files." >&2
+            echo "If a source file was added/removed, update the expected list AND package.json files." >&2
+            exit 1
+          fi
+
+          if printf '%s\n' "$actual" | grep -qE '^tests/'; then
+            echo "ERROR: a tests/ file leaked into the packed tarball — check package.json files." >&2
+            exit 1
+          fi
+
+          echo "OK: 7 files, no tests."
