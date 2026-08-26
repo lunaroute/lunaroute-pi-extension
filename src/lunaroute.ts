@@ -6,11 +6,13 @@ export const LUNAROUTE_PROVIDER = "lunaroute";
 export const LUNAROUTE_ENV_ROUTING_URL = "LUNAROUTE_ROUTING_URL";
 export const LUNAROUTE_ENV_API_URL = "LUNAROUTE_API_URL";
 export const LUNAROUTE_ENV_FRONT_URL = "LUNAROUTE_FRONT_URL";
+export const LUNAROUTE_ENV_MCP_URL = "LUNAROUTE_MCP_URL";
 
 // Production defaults — confirm against the deployed LunaRoute environment before release.
 export const DEFAULT_ROUTING_URL = "https://gw.lunaroute.com/v1";
 export const DEFAULT_API_URL = "https://api.lunaroute.com";
 export const DEFAULT_FRONT_URL = "https://app.lunaroute.com";
+export const DEFAULT_MCP_URL = "https://mcp.lunaroute.com/mcp";
 
 export function resolveRoutingUrl(env: NodeJS.ProcessEnv): string {
   return env[LUNAROUTE_ENV_ROUTING_URL] || DEFAULT_ROUTING_URL;
@@ -20,6 +22,9 @@ export function resolveApiUrl(env: NodeJS.ProcessEnv): string {
 }
 export function resolveFrontUrl(env: NodeJS.ProcessEnv): string {
   return env[LUNAROUTE_ENV_FRONT_URL] || DEFAULT_FRONT_URL;
+}
+export function resolveMcpUrl(env: NodeJS.ProcessEnv): string {
+  return env[LUNAROUTE_ENV_MCP_URL] || DEFAULT_MCP_URL;
 }
 
 export function buildAttributionHeaders(version: string, sessionId: string): Record<string, string> {
