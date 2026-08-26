@@ -55,6 +55,30 @@ an API key is issued and stored) or **Paste an API key** (paste an existing
 - It does not persist the model catalog across restarts (it re-fetches on
   refresh).
 
+## MCP tools (image generation)
+
+When you are logged in, the extension also auto-registers the hosted LunaRoute
+MCP server (`https://mcp.lunaroute.com/mcp`) with [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter)
+via its runtime-registration event, so LunaRoute tools (in v1: `generate_image`)
+become callable from Pi. The registration is in-memory only and never written to
+any `mcp.json` — it lives for the Pi process and is disposed when the session
+ends. Your `lr_` key is never persisted to any MCP config.
+
+- **Requires pi-mcp-adapter.** Tools surface through the adapter's `mcp()` proxy
+  tool, not as first-class Pi tools. Install it with `pi install npm:pi-mcp-adapter`.
+- **Logged out**: no registration occurs (silent). Log in with `/login lunaroute`.
+- **Logged in but adapter not installed**: `session_start` shows a one-time hint
+  pointing you to `pi install npm:pi-mcp-adapter`. If you log in mid-session
+  without the adapter, the hint appears on the next session start (the login
+  flow has no UI notification surface).
+- **After `/login lunaroute`** with a rotated key: the prior registration is
+  disposed and re-registered with the new key, so rotation takes effect without
+  restarting Pi.
+- Org/user/tool policy is enforced server-side and shapes `tools/list` — an
+  empty tool list is a valid outcome, not an error.
+- Overriding `LUNAROUTE_MCP_URL` sends your `lr_` key to that endpoint; prefer
+  HTTPS in production (HTTP is intended only for local development).
+
 ## Configuration
 
 The gateway, API, and front URLs default to production and are overridable for
@@ -65,6 +89,7 @@ dev/staging via environment variables before starting Pi:
 | `LUNAROUTE_ROUTING_URL` | `https://gw.lunaroute.com/v1` | Gateway base URL (provider `baseUrl` + `/models`) |
 | `LUNAROUTE_API_URL` | `https://api.lunaroute.com` | API host for `/v1/auth/exchange` |
 | `LUNAROUTE_FRONT_URL` | `https://app.lunaroute.com` | Web app host for `/pi-auth` browser login |
+| `LUNAROUTE_MCP_URL` | `https://mcp.lunaroute.com/mcp` | Hosted MCP server URL registered with pi-mcp-adapter |
 
 ## Troubleshooting
 
@@ -91,6 +116,10 @@ Manual smoke test:
 5. Repeat with the paste path.
 6. On a fresh profile with no key, confirm the first-run hint appears and no
    error is thrown.
+7. With pi-mcp-adapter installed, `/login lunaroute`, then `/mcp` should list
+   the `lunaroute` server; call `generate_image` end-to-end.
+8. Without pi-mcp-adapter, logged in, confirm the one-time `pi install
+   npm:pi-mcp-adapter` hint; logged out, confirm silence.
 
 Package dry run:
 

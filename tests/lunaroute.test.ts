@@ -2,9 +2,11 @@ import { describe, expect, test } from "vitest";
 import {
   DEFAULT_API_URL,
   DEFAULT_FRONT_URL,
+  DEFAULT_MCP_URL,
   DEFAULT_ROUTING_URL,
   LUNAROUTE_ENV_API_URL,
   LUNAROUTE_ENV_FRONT_URL,
+  LUNAROUTE_ENV_MCP_URL,
   LUNAROUTE_ENV_ROUTING_URL,
   LUNAROUTE_PROVIDER,
   buildAttributionHeaders,
@@ -20,6 +22,7 @@ import {
   resolveApiUrl,
   resolveCredentialKey,
   resolveFrontUrl,
+  resolveMcpUrl,
   resolveRoutingUrl,
   firstRunHint,
 } from "../src/lunaroute.js";
@@ -30,9 +33,11 @@ describe("lunaroute v2 helpers", () => {
     expect(LUNAROUTE_ENV_ROUTING_URL).toBe("LUNAROUTE_ROUTING_URL");
     expect(LUNAROUTE_ENV_API_URL).toBe("LUNAROUTE_API_URL");
     expect(LUNAROUTE_ENV_FRONT_URL).toBe("LUNAROUTE_FRONT_URL");
+    expect(LUNAROUTE_ENV_MCP_URL).toBe("LUNAROUTE_MCP_URL");
     expect(DEFAULT_ROUTING_URL).toBe("https://gw.lunaroute.com/v1");
     expect(DEFAULT_API_URL).toBe("https://api.lunaroute.com");
     expect(DEFAULT_FRONT_URL).toBe("https://app.lunaroute.com");
+    expect(DEFAULT_MCP_URL).toBe("https://mcp.lunaroute.com/mcp");
   });
 
   test("URL resolvers prefer env vars, fall back to defaults", () => {
@@ -42,6 +47,8 @@ describe("lunaroute v2 helpers", () => {
     expect(resolveApiUrl({ LUNAROUTE_API_URL: "http://localhost:8181" })).toBe("http://localhost:8181");
     expect(resolveFrontUrl({})).toBe(DEFAULT_FRONT_URL);
     expect(resolveFrontUrl({ LUNAROUTE_FRONT_URL: "http://localhost:3100" })).toBe("http://localhost:3100");
+    expect(resolveMcpUrl({})).toBe(DEFAULT_MCP_URL);
+    expect(resolveMcpUrl({ LUNAROUTE_MCP_URL: "http://localhost:9999/mcp" })).toBe("http://localhost:9999/mcp");
   });
 
   test("buildAttributionHeaders returns only the three v1 headers with a shared session id", () => {
