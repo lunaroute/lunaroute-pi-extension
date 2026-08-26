@@ -88,9 +88,9 @@ export function resolveCredentialKey(credential: Credential | undefined): string
   return undefined;
 }
 
-export type GatewayPiBlock = {
+export type GatewayPiBlock = Partial<OpenAICompletionsCompat> & {
   thinkingLevelMap?: ThinkingLevelMap;
-  compat?: Pick<OpenAICompletionsCompat, "thinkingFormat" | "maxTokensField" | "supportsReasoningEffort">;
+  compat?: OpenAICompletionsCompat;
 };
 
 export type GatewayModelObject = {
@@ -99,6 +99,7 @@ export type GatewayModelObject = {
   context_window?: number;
   max_output_tokens?: number;
   capabilities?: Record<string, boolean>;
+  client_compat?: { pi?: GatewayPiBlock } | null;
   pi?: GatewayPiBlock;
 };
 
@@ -106,11 +107,23 @@ export type CatalogMappingResult =
   | { ok: true; model: ProviderModelConfig }
   | { ok: false; reason: "reasoning_missing_pi_block"; id: string };
 
+function normalizeGatewayPiBlock(pi: GatewayPiBlock): {
+  thinkingLevelMap?: ThinkingLevelMap;
+  compat?: OpenAICompletionsCompat;
+} {
+  const { thinkingLevelMap, compat: nestedCompat, ...flatCompat } = pi;
+  return {
+    thinkingLevelMap,
+    compat: nestedCompat ?? (Object.keys(flatCompat).length > 0 ? flatCompat : undefined),
+  };
+}
+
 export function mapCatalogEntry(entry: GatewayModelObject): CatalogMappingResult {
   const reasoning = entry.capabilities?.reasoning === true;
   const input: ("text" | "image")[] = entry.capabilities?.vision === true ? ["text", "image"] : ["text"];
+  const gatewayPi = entry.client_compat?.pi ?? entry.pi;
 
-  if (reasoning && !entry.pi) {
+  if (reasoning && !gatewayPi) {
     return { ok: false, reason: "reasoning_missing_pi_block", id: entry.id };
   }
 
@@ -123,8 +136,11 @@ export function mapCatalogEntry(entry: GatewayModelObject): CatalogMappingResult
     contextWindow: entry.context_window ?? 0,
     maxTokens: entry.max_output_tokens ?? 0,
   };
-  if (reasoning && entry.pi?.thinkingLevelMap) model.thinkingLevelMap = entry.pi.thinkingLevelMap;
-  if (reasoning && entry.pi?.compat) model.compat = entry.pi.compat;
+  if (reasoning && gatewayPi) {
+    const { thinkingLevelMap, compat } = normalizeGatewayPiBlock(gatewayPi);
+    if (thinkingLevelMap) model.thinkingLevelMap = thinkingLevelMap;
+    if (compat) model.compat = compat;
+  }
   return { ok: true, model };
 }
 

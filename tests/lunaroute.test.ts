@@ -159,12 +159,68 @@ describe("lunaroute v2 helpers", () => {
     expect(result.model.maxTokens).toBe(16384);
   });
 
+  test("mapCatalogEntry maps client_compat.pi reasoning fields", () => {
+    const thinkingLevelMap = {
+      off: null,
+      minimal: "high",
+      low: "high",
+      medium: "high",
+      high: "high",
+      xhigh: "max",
+    } as const;
+
+    const result = mapCatalogEntry({
+      id: "glm-5.2-vision",
+      display_name: "GLM 5.2 Vision",
+      context_window: 131_072,
+      max_output_tokens: 65_536,
+      capabilities: { reasoning: true, vision: true, tools: true },
+      client_compat: {
+        pi: {
+          maxTokensField: "max_tokens",
+          supportsReasoningEffort: true,
+          thinkingFormat: "zai",
+          thinkingLevelMap,
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model).toMatchObject({
+      id: "glm-5.2-vision",
+      name: "GLM 5.2 Vision",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 131_072,
+      maxTokens: 65_536,
+      thinkingLevelMap,
+      compat: {
+        maxTokensField: "max_tokens",
+        supportsReasoningEffort: true,
+        thinkingFormat: "zai",
+      },
+    });
+  });
+
   test("mapCatalogEntry skips a reasoning model that is missing the pi block", () => {
     const result = mapCatalogEntry({ id: "broken-reasoner", capabilities: { reasoning: true } });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("reasoning_missing_pi_block");
     expect(result.id).toBe("broken-reasoner");
+  });
+
+  test("mapCatalogEntry skips glm-5.2-vision-flex when client_compat is null", () => {
+    const result = mapCatalogEntry({
+      id: "glm-5.2-vision-flex",
+      capabilities: { reasoning: true, vision: true, tools: true },
+      client_compat: null,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("reasoning_missing_pi_block");
+    expect(result.id).toBe("glm-5.2-vision-flex");
   });
 
   test("mapCatalogEntry falls back to id for name when display_name is absent and defaults window/maxTokens to 0", () => {

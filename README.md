@@ -10,7 +10,7 @@ models file.
 
 - Pi **>= 0.84.1**.
 - A LunaRoute account with access to at least one organization.
-- A LunaRoute gateway that exposes the Pi compatibility block on `GET /v1/models`
+- A LunaRoute gateway that exposes `client_compat.pi` on `GET /v1/models`
   (LunaRoute server issue `vkd3` or later).
 
 ## Quick start
@@ -37,8 +37,9 @@ an API key is issued and stored) or **Paste an API key** (paste an existing
 - Syncs the model list from `GET {gateway}/v1/models` and maps each entry to a
   Pi model: `context_window` → `contextWindow`, `max_output_tokens` →
   `maxTokens`, `capabilities.reasoning` → `reasoning`, `capabilities.vision` →
-  `input: ["text","image"]`, and the server-provided `pi` block
-  (`thinkingLevelMap`, `compat`).
+  `input: ["text","image"]`, `client_compat.pi.thinkingLevelMap` →
+  `thinkingLevelMap`, and the remaining Pi compatibility fields → `compat`.
+  The legacy top-level `pi.compat` shape remains supported.
 - Adds attribution headers to every LunaRoute request:
   ```http
   lunaroute-agent: pi/<pi-version>
@@ -94,8 +95,8 @@ dev/staging via environment variables before starting Pi:
 ## Troubleshooting
 
 - **No models appear after login**: the gateway may be unreachable, or the key
-  may be stale. Re-run `/login lunaroute`. Reasoning models without a server
-  `pi` block are skipped (requires LunaRoute server issue `vkd3`).
+  may be stale. Re-run `/login lunaroute`. Reasoning models without server
+  `client_compat.pi` metadata (or the legacy `pi` block) are skipped.
 - **First-run hint**: if you have not logged in, `session_start` shows
   `Run /login lunaroute to start using LunaRoute.`
 
@@ -111,7 +112,7 @@ Manual smoke test:
 
 1. On Pi >= 0.84.1 against a `vkd3`-patched LunaRoute, run `pi -e .`.
 2. `/login lunaroute`, pick browser, complete the flow.
-3. Confirm a reasoning model (e.g. `glm-5.2`) appears in `/model`.
+3. Confirm a reasoning model (e.g. `glm-5.2-vision`) appears in `/model`.
 4. Send a request; confirm LunaRoute receives the three attribution headers.
 5. Repeat with the paste path.
 6. On a fresh profile with no key, confirm the first-run hint appears and no

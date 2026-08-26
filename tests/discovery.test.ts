@@ -33,13 +33,17 @@ describe("lunaroute refreshModels", () => {
           capabilities: { tools: true },
         },
         {
-          id: "glm-5.2",
+          id: "glm-5.2-vision",
           context_window: 1048576,
           max_output_tokens: 16384,
-          capabilities: { reasoning: true, tools: true },
-          pi: {
-            thinkingLevelMap: { off: null, high: "high" },
-            compat: { thinkingFormat: "zai", maxTokensField: "max_tokens", supportsReasoningEffort: false },
+          capabilities: { reasoning: true, vision: true, tools: true },
+          client_compat: {
+            pi: {
+              thinkingLevelMap: { off: null, high: "high" },
+              thinkingFormat: "zai",
+              maxTokensField: "max_tokens",
+              supportsReasoningEffort: true,
+            },
           },
         },
       ]),
@@ -57,9 +61,9 @@ describe("lunaroute refreshModels", () => {
 
     expect(models).toHaveLength(2);
     expect(models[0]).toMatchObject({ id: "chat-1", name: "Chat 1", reasoning: false, contextWindow: 8192, maxTokens: 1024 });
-    expect(models[1]).toMatchObject({ id: "glm-5.2", reasoning: true });
+    expect(models[1]).toMatchObject({ id: "glm-5.2-vision", reasoning: true, input: ["text", "image"] });
     expect(models[1].thinkingLevelMap).toEqual({ off: null, high: "high" });
-    expect(models[1].compat).toEqual({ thinkingFormat: "zai", maxTokensField: "max_tokens", supportsReasoningEffort: false });
+    expect(models[1].compat).toEqual({ thinkingFormat: "zai", maxTokensField: "max_tokens", supportsReasoningEffort: true });
   });
 
   test("returns [] and does not fetch when allowNetwork is false", async () => {
@@ -96,11 +100,16 @@ describe("lunaroute refreshModels", () => {
     expect(models).toEqual([]);
   });
 
-  test("skips a reasoning model missing the pi block (not in the returned list)", async () => {
+  test("skips reasoning models with missing or null Pi compatibility metadata", async () => {
     vi.stubGlobal("fetch", vi.fn(async () =>
       modelsResponse([
         { id: "ok-chat", capabilities: { tools: true } },
         { id: "broken-reasoner", capabilities: { reasoning: true } },
+        {
+          id: "glm-5.2-vision-flex",
+          capabilities: { reasoning: true, vision: true, tools: true },
+          client_compat: null,
+        },
       ]),
     ));
     const models = await createRefreshModels({})(fakeContext());
