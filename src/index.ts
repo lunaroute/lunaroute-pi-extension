@@ -29,8 +29,9 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
       async login(callbacks) {
         const creds = await lunarouteOAuth.login(callbacks);
         await disposeLunarouteMcp();
-        const { error } = registerLunarouteMcp(pi, creds.access, mcpDeps);
+        const { registered, error } = registerLunarouteMcp(pi, creds.access, mcpDeps);
         if (error) console.warn(`LunaRoute MCP re-register failed: ${error.message}`);
+        else if (!registered) maybeShowAdapterHint({ notify: (m) => callbacks.onProgress?.(m) });
         return creds;
       },
     },
