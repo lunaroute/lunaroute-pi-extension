@@ -14,7 +14,7 @@
     "url": "https://github.com/lunaroute/lunaroute-pi-extension.git"
   },
   "publishConfig": {
-    "access": "restricted"
+    "access": "public"
   },
   "files": [
     "src",
