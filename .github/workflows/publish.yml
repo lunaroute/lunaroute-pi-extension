@@ -11,8 +11,8 @@ name: publish
 #   workflow: publish.yml
 #   allowed:  npm publish
 #
-# The very first publish (v0.2.0) must be done locally with
-#   `npm publish --access restricted --provenance`
+# The very first publish (v0.2.0) was done locally with
+#   `npm publish --provenance`
 # because Trusted Publishing requires the package to already exist on npm.
 # After that, all publishes go through this workflow.
 
@@ -32,15 +32,16 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          # Node 24 bundles npm 11.x, which satisfies the Trusted Publishing
+          # floor (npm CLI >= 11.5.1). Node 22 bundles npm 10.x, which does NOT.
+          node-version: "24"
           cache: npm
-          # npm CLI >=11.5.1 is required for Trusted Publishing; setup-node@v4
-          # ships a recent npm that satisfies this on Node 22.
       - run: npm ci
       # Gate: a tag that fails tests does not ship.
       - run: npm run check
       # Provenance attests against the public repo URL (package.json repository).
-      # `--access restricted` keeps the scoped package private.
-      # Prerelease versions (0.2.0-beta.1) auto-publish to the `beta` dist-tag;
-      # stable (0.2.0) to `latest`.
-      - run: npm publish --provenance --access restricted
+      # No --access flag: publishConfig.access in package.json ("public") wins,
+      # so anyone can `pi install npm:@lunaroute/pi-extension`.
+      # Prerelease versions (0.2.1-beta.1) auto-publish to the `beta` dist-tag;
+      # stable (0.2.1) to `latest`.
+      - run: npm publish --provenance
