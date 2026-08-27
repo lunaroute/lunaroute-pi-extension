@@ -259,4 +259,38 @@ describe("pi extension v2 wiring", () => {
     expect(adapter.requests).toHaveLength(2);
     expect(adapter.requests[1].definition.headers["LUNAROUTE-API-KEY"]).toBe("lr_new");
   });
+
+  test("login surfaces the install hint via onProgress when the adapter is absent", async () => {
+    const { pi, registerProvider } = fakePi(); // no adapter installed
+    lunarouteExtension(pi);
+    const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
+    const oauth = config.oauth as { login(c: OAuthLoginCallbacks): Promise<unknown> };
+    const callbacks = pasteCallbacks("lr_new");
+    await oauth.login(callbacks);
+    expect(callbacks.onProgress).toHaveBeenCalledWith(MCP_INSTALL_HINT);
+  });
+
+  test("login does not surface the install hint when the adapter is installed", async () => {
+    const { pi, events, registerProvider } = fakePi();
+    installFakeAdapter(events);
+    lunarouteExtension(pi);
+    const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
+    const oauth = config.oauth as { login(c: OAuthLoginCallbacks): Promise<unknown> };
+    const callbacks = pasteCallbacks("lr_new");
+    await oauth.login(callbacks);
+    expect(callbacks.onProgress).not.toHaveBeenCalledWith(MCP_INSTALL_HINT);
+  });
+
+  test("login surfaces the hint only once across two logins when the adapter stays absent", async () => {
+    const { pi, registerProvider } = fakePi();
+    lunarouteExtension(pi);
+    const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
+    const oauth = config.oauth as { login(c: OAuthLoginCallbacks): Promise<unknown> };
+    const first = pasteCallbacks("lr_one");
+    await oauth.login(first);
+    const second = pasteCallbacks("lr_two");
+    await oauth.login(second);
+    expect(first.onProgress).toHaveBeenCalledWith(MCP_INSTALL_HINT);
+    expect(second.onProgress).not.toHaveBeenCalled();
+  });
 });
