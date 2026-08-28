@@ -1,8 +1,12 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { Credential, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai";
+import type { Api, Credential, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 export const LUNAROUTE_PROVIDER = "lunaroute";
+// Every LunaRoute model is served over the OpenAI-completions API; this is also
+// set on the provider config, so toStoredModel mirrors what applyExtension
+// would produce and the catalog round-trips through Pi's ModelsStore.
+export const LUNAROUTE_API = "openai-completions" as const;
 export const LUNAROUTE_ENV_ROUTING_URL = "LUNAROUTE_ROUTING_URL";
 export const LUNAROUTE_ENV_API_URL = "LUNAROUTE_API_URL";
 export const LUNAROUTE_ENV_FRONT_URL = "LUNAROUTE_FRONT_URL";
@@ -146,6 +150,27 @@ export function mapCatalogEntry(entry: GatewayModelObject): CatalogMappingResult
 
 export function missingPiBlockWarning(id: string): string {
   return `LunaRoute model "${id}" supports reasoning but the catalog did not include Pi compatibility metadata. Skipping it. (Requires LunaRoute server issue vkd3.)`;
+}
+
+/** Build the persisted Model object for a mapped catalog entry.
+ * Mirrors provider-composer's applyExtension output (api/provider/baseUrl
+ * filled from the provider config) so the entry survives a structuredClone
+ * through the ModelsStore and re-applies cleanly on the next launch. */
+export function toStoredModel(model: ProviderModelConfig, baseUrl: string): Model<Api> {
+  return {
+    id: model.id,
+    name: model.name,
+    api: model.api ?? LUNAROUTE_API,
+    provider: LUNAROUTE_PROVIDER,
+    baseUrl: model.baseUrl ?? baseUrl,
+    reasoning: model.reasoning,
+    thinkingLevelMap: model.thinkingLevelMap,
+    input: model.input,
+    cost: model.cost,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+    compat: model.compat,
+  };
 }
 
 export function firstRunHint(): string {

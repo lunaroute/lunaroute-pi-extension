@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import type { RefreshModelsContext } from "@earendil-works/pi-ai";
+import type { Api, Model, RefreshModelsContext } from "@earendil-works/pi-ai";
 import { createRefreshModels } from "../src/discovery.js";
 
 function fakeContext(overrides: Partial<RefreshModelsContext> = {}): RefreshModelsContext {
@@ -121,5 +121,104 @@ describe("lunaroute refreshModels", () => {
     const models = await createRefreshModels({}, { fetch: injected })(fakeContext());
     expect(models.map((m) => m.id)).toEqual(["x"]);
     expect(injected).toHaveBeenCalled();
+  });
+});
+
+describe("lunaroute refreshModels persist + restore", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const storedModel = (id: string): Model<Api> => ({
+    id,
+    name: id,
+    api: "openai-completions",
+    provider: "lunaroute",
+    baseUrl: "http://gw/v1",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 8192,
+    maxTokens: 1024,
+  });
+
+  test("offline phase restores the persisted catalog without fetching or publishing", async () => {
+    const fetchMock = vi.fn();
+    const publish = vi.fn(async () => true);
+    vi.stubGlobal("fetch", fetchMock);
+    const models = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" })(
+      fakeContext({ allowNetwork: false, stored: { models: [storedModel("cached-1")], checkedAt: 1 }, publish }),
+    );
+    expect(models.map((m) => m.id)).toEqual(["cached-1"]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  test("network phase persists the fetched catalog via context.publish({persist})", async () => {
+    const publish = vi.fn(async (_publication: unknown) => true);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        modelsResponse([
+          { id: "chat-1", display_name: "Chat 1", context_window: 8192, max_output_tokens: 1024, capabilities: { tools: true } },
+          {
+            id: "glm-5.2-vision-background",
+            context_window: 1048576,
+            max_output_tokens: 16384,
+            capabilities: { reasoning: true, vision: true, tools: true },
+            client_compat: { pi: { thinkingLevelMap: { off: null, high: "high" } } },
+          },
+        ]),
+      ),
+    );
+    await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" })(fakeContext({ publish }));
+    expect(publish).toHaveBeenCalledTimes(1);
+    const arg = publish.mock.calls[0][0] as { persist: { models: Model<Api>[]; checkedAt: number } };
+    expect(arg.persist.models).toHaveLength(2);
+    expect(arg.persist.models[0]).toMatchObject({
+      id: "chat-1",
+      provider: "lunaroute",
+      api: "openai-completions",
+      baseUrl: "http://gw/v1",
+    });
+    expect(arg.persist.checkedAt).toEqual(expect.any(Number));
+  });
+
+  test("retains the persisted catalog when the network fetch throws", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    const models = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" })(
+      fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
+    );
+    expect(models.map((m) => m.id)).toEqual(["cached-1"]);
+  });
+
+  test("retains the persisted catalog on a non-2xx response", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 401 })));
+    const models = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" })(
+      fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
+    );
+    expect(models.map((m) => m.id)).toEqual(["cached-1"]);
+  });
+
+  test("invokes onCatalogRefreshed after a successful fetch, not on failure", async () => {
+    const onCatalogRefreshed = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "x" }])));
+    await createRefreshModels({}, { onCatalogRefreshed })(fakeContext());
+    expect(onCatalogRefreshed).toHaveBeenCalledTimes(1);
+    expect((onCatalogRefreshed.mock.calls[0][0] as { id: string }[]).map((m) => m.id)).toEqual(["x"]);
+  });
+
+  test("does not persist or notify onCatalogRefreshed when there is no credential", async () => {
+    const publish = vi.fn(async () => true);
+    const onCatalogRefreshed = vi.fn();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const models = await createRefreshModels({}, { onCatalogRefreshed })(
+      fakeContext({ credential: undefined, publish }),
+    );
+    expect(models).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(onCatalogRefreshed).not.toHaveBeenCalled();
   });
 });

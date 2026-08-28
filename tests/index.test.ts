@@ -1,5 +1,5 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { OAuthLoginCallbacks } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { Api, Model, OAuthLoginCallbacks, RefreshModelsContext } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { LUNAROUTE_PROVIDER, firstRunHint } from "../src/lunaroute.js";
 import { MCP_INSTALL_HINT, MCP_RUNTIME_REGISTER_EVENT, _resetMcpState, type McpRuntimeRegistrationRequest } from "../src/mcp.js";
@@ -9,6 +9,7 @@ type SessionHandler = (event: unknown, ctx: FakeContext) => void | Promise<void>
 
 type FakeContext = {
   hasUI: boolean;
+  model?: Model<Api> | undefined;
   modelRegistry: {
     getProviderAuthStatus: (provider: string) => { configured: boolean } | undefined;
     getApiKeyForProvider: (provider: string) => Promise<string | undefined>;
@@ -55,9 +56,10 @@ function installFakeAdapter(bus: Bus) {
 function fakePi() {
   const handlers = new Map<string, SessionHandler>();
   const registerProvider = vi.fn();
+  const setModel = vi.fn(async (_model: unknown) => true);
   const events = fakeEventBus();
   const on = vi.fn((name: string, handler: SessionHandler) => handlers.set(name, handler));
-  return { pi: { registerProvider, on, events } as unknown as ExtensionAPI, registerProvider, on, handlers, events };
+  return { pi: { registerProvider, on, events, setModel } as unknown as ExtensionAPI, registerProvider, setModel, on, handlers, events };
 }
 
 function fakeContext(overrides: Partial<FakeContext> = {}): FakeContext {
@@ -292,5 +294,111 @@ describe("pi extension v2 wiring", () => {
     await oauth.login(second);
     expect(first.onProgress).toHaveBeenCalledWith(MCP_INSTALL_HINT);
     expect(second.onProgress).not.toHaveBeenCalled();
+  });
+});
+
+describe("model persistence and auto-select", () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    _resetMcpState();
+  });
+
+  function modelsResponse(data: unknown[]): Response {
+    return new Response(JSON.stringify({ object: "list", data }), { status: 200 });
+  }
+
+  function fakeRefreshContext(overrides: Partial<RefreshModelsContext> = {}): RefreshModelsContext {
+    return {
+      credential: { type: "oauth", access: "lr_test", refresh: "", expires: 1 },
+      stored: undefined,
+      publish: vi.fn(async () => true),
+      allowNetwork: true,
+      signal: new AbortController().signal,
+      ...overrides,
+    };
+  }
+
+  function refreshModelsOf(registerProvider: ReturnType<typeof vi.fn>) {
+    const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
+    return config.refreshModels as (ctx: RefreshModelsContext) => Promise<ProviderModelConfig[]>;
+  }
+
+  function fireModelSelect(handlers: Map<string, SessionHandler>, model: Model<Api>) {
+    handlers.get("model_select")?.({ type: "model_select", model, previousModel: undefined, source: "set" }, fakeContext());
+  }
+
+  test("registers a model_select handler", () => {
+    const { pi, on } = fakePi();
+    lunarouteExtension(pi);
+    expect(on).toHaveBeenCalledWith("model_select", expect.any(Function));
+  });
+
+  test("auto-selects the first lunaroute model after a network refresh when no model is selected", async () => {
+    const { pi, registerProvider, setModel } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM" }])));
+    lunarouteExtension(pi);
+    await refreshModelsOf(registerProvider)(fakeRefreshContext());
+    expect(setModel).toHaveBeenCalledTimes(1);
+    expect(setModel.mock.calls[0][0]).toMatchObject({
+      id: "glm-5.2",
+      provider: LUNAROUTE_PROVIDER,
+      api: "openai-completions",
+      baseUrl: "http://gw/v1",
+    });
+  });
+
+  test("does not auto-select when the user already has a non-unknown model", async () => {
+    const { pi, registerProvider, setModel, handlers } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2" }])));
+    lunarouteExtension(pi);
+    fireModelSelect(handlers, { id: "other", name: "other", api: "anthropic-messages", provider: "anthropic", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 0, maxTokens: 0 });
+    await refreshModelsOf(registerProvider)(fakeRefreshContext());
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
+  test("auto-selects when the current model is the 'unknown' sentinel (first login)", async () => {
+    const { pi, registerProvider, setModel, handlers } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2" }])));
+    lunarouteExtension(pi);
+    fireModelSelect(handlers, { id: "unknown", name: "unknown", api: "unknown", provider: "unknown", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 0, maxTokens: 0 });
+    await refreshModelsOf(registerProvider)(fakeRefreshContext());
+    expect(setModel).toHaveBeenCalledTimes(1);
+  });
+
+  test("session_start tracks the current model from ctx.model (no auto-select afterwards)", async () => {
+    const { pi, registerProvider, setModel, handlers, events } = fakePi();
+    installFakeAdapter(events);
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2" }])));
+    lunarouteExtension(pi);
+    const ctx = fakeContext({
+      model: { id: "existing", name: "existing", api: "anthropic-messages", provider: "anthropic", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 0, maxTokens: 0 } as unknown as Model<Api>,
+      modelRegistry: { getProviderAuthStatus: () => ({ configured: true }), getApiKeyForProvider: () => Promise.resolve("lr_key") },
+    });
+    await handlers.get("session_start")?.({}, ctx);
+    await refreshModelsOf(registerProvider)(fakeRefreshContext());
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
+  test("does not auto-select when the catalog fetch fails", async () => {
+    const { pi, registerProvider, setModel } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    lunarouteExtension(pi);
+    await refreshModelsOf(registerProvider)(fakeRefreshContext());
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
+  test("does not auto-select when the catalog is empty", async () => {
+    const { pi, registerProvider, setModel } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([])));
+    lunarouteExtension(pi);
+    await refreshModelsOf(registerProvider)(fakeRefreshContext());
+    expect(setModel).not.toHaveBeenCalled();
   });
 });

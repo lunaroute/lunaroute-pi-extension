@@ -41,8 +41,9 @@ Then in Pi:
 
 Choose **Log in with browser** (a browser opens to LunaRoute; after you
 approve, an API key is issued and stored) or **Paste an API key** (paste an
-existing `lr_...` key). After login, run `/model` and pick a `lunaroute/*`
-model.
+existing `lr_...` key). After login, the first `lunaroute/*` model is selected
+for you and remembered across restarts — run `/model` only if you want to pick a
+different one.
 
 ## LunaRoute MCP tools
 
