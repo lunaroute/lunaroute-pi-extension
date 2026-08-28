@@ -1,5 +1,8 @@
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, OAuthLoginCallbacks, RefreshModelsContext } from "@earendil-works/pi-ai";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { LUNAROUTE_PROVIDER, firstRunHint } from "../src/lunaroute.js";
 import { MCP_INSTALL_HINT, MCP_RUNTIME_REGISTER_EVENT, _resetMcpState, type McpRuntimeRegistrationRequest } from "../src/mcp.js";
@@ -91,9 +94,10 @@ describe("pi extension v2 wiring", () => {
     _resetMcpState();
   });
 
-  test("registers the lunaroute provider with identity, auth, headers, refreshModels, and empty models", () => {
+  test("registers the lunaroute provider with identity, auth, headers, refreshModels, and store-seeded models", () => {
     const { pi, registerProvider } = fakePi();
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubEnv("PI_CODING_AGENT_DIR", mkdtempSync(join(tmpdir(), "lr-store-")));
 
     lunarouteExtension(pi);
 
@@ -107,6 +111,18 @@ describe("pi extension v2 wiring", () => {
     expect(config.models).toEqual([]);
     expect(config.oauth).toBeDefined();
     expect(typeof config.refreshModels).toBe("function");
+  });
+
+  test("seeds registration models from the persisted snapshot when present", () => {
+    const { pi, registerProvider } = fakePi();
+    const dir = mkdtempSync(join(tmpdir(), "lr-seed-"));
+    const stored = { id: "glm-5.3-flash-background", api: "openai-completions", provider: "lunaroute", baseUrl: "https://gw/v1", reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [stored], checkedAt: 1 } }));
+    vi.stubEnv("PI_CODING_AGENT_DIR", dir);
+
+    lunarouteExtension(pi);
+    const [, config] = registerProvider.mock.calls[0] as [string, Record<string, unknown>];
+    expect(config.models).toEqual([stored]);
   });
 
   test("attribution headers share one session id and omit User-Agent", () => {

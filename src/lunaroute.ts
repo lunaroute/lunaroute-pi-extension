@@ -1,6 +1,11 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Api, Credential, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+
+export const LUNAROUTE_ENV_AGENT_DIR = "PI_CODING_AGENT_DIR";
 
 export const LUNAROUTE_PROVIDER = "lunaroute";
 // Every LunaRoute model is served over the OpenAI-completions API; this is also
@@ -173,6 +178,41 @@ export function toStoredModel(model: ProviderModelConfig, baseUrl: string): Mode
     maxTokens: model.maxTokens,
     compat: model.compat,
   };
+}
+
+function agentDirFromEnv(env: NodeJS.ProcessEnv): string {
+  const value = env[LUNAROUTE_ENV_AGENT_DIR];
+  return typeof value === "string" && value ? value : join(homedir(), ".pi", "agent");
+}
+
+/**
+ * Synchronously read the persisted LunaRoute snapshot from Pi's ModelsStore so
+ * registerProvider can seed the registry with a non-empty model list.
+ *
+ * Why: refreshModels results are applied asynchronously (generation-checked
+ * publish), and in at least one Pi runtime (the compiled RPC sidecar) the
+ * post-startup publications can be superseded and dropped, leaving the
+ * provider with its registration-time list — which was `[]` — until the next
+ * fully successful refresh. Seeding from the store at registration makes the
+ * registry non-empty deterministically; a successful refresh replaces it.
+ * ponytail: reads Pi's models-store.json layout directly; if Pi ever changes
+ * that file's schema this silently degrades to [] and the old race returns.
+ */
+export function readPersistedModels(env: NodeJS.ProcessEnv): Model<Api>[] {
+  try {
+    const raw = readFileSync(join(agentDirFromEnv(env), "models-store.json"), "utf8");
+    const parsed = JSON.parse(raw) as Record<string, { models?: unknown }>;
+    const models = parsed[LUNAROUTE_PROVIDER]?.models;
+    if (!Array.isArray(models)) return [];
+    return models.filter(
+      (m): m is Model<Api> =>
+        typeof m === "object" && m !== null &&
+        typeof (m as Model<Api>).id === "string" &&
+        typeof (m as Model<Api>).api === "string",
+    );
+  } catch {
+    return [];
+  }
 }
 
 export function firstRunHint(): string {

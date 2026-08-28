@@ -1,4 +1,7 @@
 import { describe, expect, test } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   DEFAULT_API_URL,
   DEFAULT_FRONT_URL,
@@ -23,6 +26,7 @@ import {
   resolveCredentialKey,
   resolveFrontUrl,
   resolveMcpUrl,
+  readPersistedModels,
   resolveRoutingUrl,
   firstRunHint,
 } from "../src/lunaroute.js";
@@ -252,5 +256,46 @@ describe("lunaroute v2 helpers", () => {
     expect(missingPiBlockWarning("glm-x")).toContain("glm-x");
     expect(missingPiBlockWarning("glm-x")).not.toContain("lr_");
     expect(firstRunHint()).toContain("/login lunaroute");
+  });
+});
+
+describe("readPersistedModels", () => {
+  const storedModel = {
+    id: "glm-5.3-flash-background",
+    name: "glm-5.3-flash-background",
+    api: "openai-completions",
+    provider: "lunaroute",
+    baseUrl: "https://gw.lunaroute.com/v1",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 524288,
+    maxTokens: 131072,
+  };
+
+  test("reads the lunaroute snapshot from Pi's models-store.json under PI_CODING_AGENT_DIR", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lr-store-"));
+    writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [storedModel], checkedAt: 1 } }));
+    const models = readPersistedModels({ PI_CODING_AGENT_DIR: dir });
+    expect(models).toHaveLength(1);
+    expect(models[0].id).toBe("glm-5.3-flash-background");
+    expect(models[0].api).toBe("openai-completions");
+  });
+
+  test("falls back to ~/.pi/agent when PI_CODING_AGENT_DIR is unset", () => {
+    const models = readPersistedModels({});
+    // The real agent dir may or may not have a snapshot; it must at least not throw.
+    expect(Array.isArray(models)).toBe(true);
+  });
+
+  test("returns [] for a missing, corrupt, or empty store", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lr-store-"));
+    expect(readPersistedModels({ PI_CODING_AGENT_DIR: dir })).toEqual([]);
+    writeFileSync(join(dir, "models-store.json"), "not json{");
+    expect(readPersistedModels({ PI_CODING_AGENT_DIR: dir })).toEqual([]);
+    writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [] } }));
+    expect(readPersistedModels({ PI_CODING_AGENT_DIR: dir })).toEqual([]);
+    writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [{ nope: true }, storedModel] } }));
+    expect(readPersistedModels({ PI_CODING_AGENT_DIR: dir })).toEqual([storedModel]);
   });
 });

@@ -6,6 +6,7 @@ import {
   buildAttributionHeaders,
   firstRunHint,
   generateSessionId,
+  readPersistedModels,
   resolveRoutingUrl,
   toStoredModel,
 } from "./lunaroute.js";
@@ -57,7 +58,7 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
         void pi.setModel(toStoredModel(models[0], resolveRoutingUrl(process.env))).catch(() => {});
       },
     }),
-    models: [],
+    models: readPersistedModels(process.env),
   });
 
   pi.on("session_start", async (_event, ctx) => {
