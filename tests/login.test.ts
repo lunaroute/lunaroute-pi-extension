@@ -70,7 +70,7 @@ describe("lunaroute login", () => {
 
     expect(key).toBe("lr_from_exchange");
     expect(onAuth).toHaveBeenCalledWith({
-      url: expect.stringMatching(/^http:\/\/front\/pi-auth\?port=39999&state=the-state&challenge=/),
+      url: expect.stringMatching(/^http:\/\/front\/device-auth\/pi\?port=39999&state=the-state&challenge=/),
       instructions: "Complete login in your browser.",
     });
     expect(exchange).toHaveBeenCalledWith("http://api", {

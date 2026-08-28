@@ -89,7 +89,7 @@ describe("lunaroute v2 helpers", () => {
   test("buildPiAuthUrl assembles the pi-auth link with port, state, and challenge", () => {
     const url = buildPiAuthUrl("https://app.lunaroute.com", 34567, "the-state", "the-challenge");
     expect(url).toBe(
-      "https://app.lunaroute.com/pi-auth?port=34567&state=the-state&challenge=the-challenge",
+      "https://app.lunaroute.com/device-auth/pi?port=34567&state=the-state&challenge=the-challenge",
     );
   });
 

@@ -64,7 +64,9 @@ export function generateState(): string {
 
 export function buildPiAuthUrl(frontUrl: string, port: number, state: string, challenge: string): string {
   const params = new URLSearchParams({ port: String(port), state, challenge });
-  return `${frontUrl}/pi-auth?${params.toString()}`;
+  // Canonical unified device-auth route (lunaroute-saas kata yxjy); the legacy
+  // /pi-auth page remains as backcompat for older deployed extensions.
+  return `${frontUrl}/device-auth/pi?${params.toString()}`;
 }
 
 export function parseCallbackQuery(callbackUrl: string): { code: string; state: string } {
