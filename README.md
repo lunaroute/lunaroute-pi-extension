@@ -80,7 +80,7 @@ for dev/staging via environment variables before starting Pi:
 |---|---|---|
 | `LUNAROUTE_ROUTING_URL` | `https://gw.lunaroute.com/v1` | Gateway base URL (provider `baseUrl` + `/models`) |
 | `LUNAROUTE_API_URL` | `https://api.lunaroute.com` | API host for `/v1/auth/exchange` |
-| `LUNAROUTE_FRONT_URL` | `https://app.lunaroute.com` | Web app host for `/pi-auth` browser login |
+| `LUNAROUTE_FRONT_URL` | `https://app.lunaroute.com` | Web app host for `/device-auth/pi` browser login |
 | `LUNAROUTE_MCP_URL` | `https://mcp.lunaroute.com/mcp` | Hosted MCP server URL registered with pi-mcp-adapter |
 
 ## Troubleshooting
