@@ -42,6 +42,11 @@ jobs:
       # Provenance attests against the public repo URL (package.json repository).
       # No --access flag: publishConfig.access in package.json ("public") wins,
       # so anyone can `pi install npm:@lunaroute/pi-extension`.
-      # Prerelease versions (0.2.1-beta.1) auto-publish to the `beta` dist-tag;
-      # stable (0.2.1) to `latest`.
-      - run: npm publish --provenance
+      # Prerelease versions (0.3.2-beta.1) publish to the `beta` dist-tag;
+      # stable (0.3.2) to `latest`. npm refuses an implicit dist-tag on
+      # prerelease versions ("must specify a tag using --tag"), so pass it
+      # explicitly either way.
+      - run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "$VERSION" == *-* ]]; then TAG=beta; else TAG=latest; fi
+          npm publish --provenance --tag "$TAG"
