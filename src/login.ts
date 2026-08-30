@@ -79,6 +79,7 @@ export type LoginDeps = {
   exchange?: (apiUrl: string, req: ExchangeRequest, signal?: AbortSignal) => Promise<ExchangeResponse>;
   state?: () => string;
   verifier?: () => string;
+  timeoutMs?: number;
 };
 
 const defaultDeps: LoginDeps = {
@@ -105,10 +106,24 @@ export async function loginWithBrowser(
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("timed out waiting for browser authorization")), LOGIN_TIMEOUT_MS);
+      timer = setTimeout(() => reject(new Error("timed out waiting for browser authorization")), d.timeoutMs ?? LOGIN_TIMEOUT_MS);
     });
+    let cb: { code: string; state: string };
     try {
-      const cb = await Promise.race([server.waitForCallback(), timeout]);
+      try {
+        cb = await Promise.race([server.waitForCallback(), timeout]);
+      } catch (err) {
+        if (!(err instanceof Error) || !err.message.includes("timed out")) throw err;
+        // ponytail: paste fallback only fires after the loopback timeout — the
+        // front page's curl hint is the fast headless path; prompting during the
+        // wait competes with the loopback for same-host users. Headless users
+        // eat the 3-min wait unless they ran the curl already.
+        const pasted = (await callbacks.onPrompt({
+          message: "Timed out waiting for the browser. If your browser is on a different machine, paste the callback URL shown there (http://127.0.0.1:.../callback?code=...):",
+        })).trim();
+        if (!pasted) throw new Error("Login cancelled");
+        cb = parseCallbackQuery(pasted);
+      }
       if (cb.state !== state) throw new Error("state mismatch");
       const result = await d.exchange!(resolveApiUrl(env), {
         code: cb.code,
