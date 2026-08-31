@@ -29,6 +29,10 @@ function fakeLoopback(code: string, state: string): LoopbackServer {
   };
 }
 
+function fakeLoopbackNever(): LoopbackServer {
+  return { port: 39999, waitForCallback: () => new Promise(() => {}), close: vi.fn() };
+}
+
 beforeEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -78,6 +82,44 @@ describe("lunaroute login", () => {
       verifier: "the-verifier",
       label: expect.any(String),
     });
+  });
+
+  test("browser path: after loopback timeout, accepts a pasted callback URL and exchanges it", async () => {
+    const onPrompt = vi.fn(async () => "http://127.0.0.1:39999/callback?code=pasted-code&state=the-state");
+    const cb = fakeCallbacks({ onSelect: vi.fn(async () => "browser"), onPrompt });
+    const exchange = vi.fn(async () => ({ full_key: "lr_pasted_key", org_id: "o", user_email: "u" }));
+    const key = await loginWithBrowser(cb, { LUNAROUTE_FRONT_URL: "http://front", LUNAROUTE_API_URL: "http://api" }, {
+      startLoopback: async () => fakeLoopbackNever(),
+      exchange,
+      state: () => "the-state",
+      verifier: () => "the-verifier",
+      timeoutMs: 10,
+    });
+    expect(key).toBe("lr_pasted_key");
+    expect(onPrompt).toHaveBeenCalled();
+    expect(exchange).toHaveBeenCalledWith("http://api", {
+      code: "pasted-code",
+      verifier: "the-verifier",
+      label: expect.any(String),
+    });
+  });
+
+  test("browser path rejects a pasted callback URL with a mismatched state", async () => {
+    const cb = fakeCallbacks({
+      onSelect: vi.fn(async () => "browser"),
+      onPrompt: vi.fn(async () => "http://127.0.0.1:39999/callback?code=c&state=wrong"),
+    });
+    const exchange = vi.fn(async () => ({ full_key: "lr_x", org_id: "o", user_email: "u" }));
+    await expect(
+      loginWithBrowser(cb, { LUNAROUTE_FRONT_URL: "http://front", LUNAROUTE_API_URL: "http://api" }, {
+        startLoopback: async () => fakeLoopbackNever(),
+        exchange,
+        state: () => "right-state",
+        verifier: () => "v",
+        timeoutMs: 10,
+      }),
+    ).rejects.toThrow("state mismatch");
+    expect(exchange).not.toHaveBeenCalled();
   });
 
   test("browser path aborts on state mismatch", async () => {
