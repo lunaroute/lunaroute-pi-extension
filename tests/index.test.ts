@@ -14,7 +14,6 @@ type FakeContext = {
   hasUI: boolean;
   model?: Model<Api> | undefined;
   modelRegistry: {
-    getProviderAuthStatus: (provider: string) => { configured: boolean } | undefined;
     getApiKeyForProvider: (provider: string) => Promise<string | undefined>;
   };
   ui: { notify: ReturnType<typeof vi.fn> };
@@ -69,7 +68,6 @@ function fakeContext(overrides: Partial<FakeContext> = {}): FakeContext {
   return {
     hasUI: true,
     modelRegistry: {
-      getProviderAuthStatus: () => ({ configured: false }),
       getApiKeyForProvider: () => Promise.resolve(undefined),
     },
     ui: { notify: vi.fn() },
@@ -149,7 +147,7 @@ describe("pi extension v2 wiring", () => {
   test("session_start notifies the first-run hint when no credential is configured", async () => {
     const { pi, handlers } = fakePi();
     lunarouteExtension(pi);
-    const ctx = fakeContext({ modelRegistry: { getProviderAuthStatus: () => ({ configured: false }), getApiKeyForProvider: () => Promise.resolve(undefined) } });
+    const ctx = fakeContext({ modelRegistry: { getApiKeyForProvider: () => Promise.resolve(undefined) } });
     await handlers.get("session_start")?.({}, ctx);
     expect(ctx.ui.notify).toHaveBeenCalledWith(firstRunHint(), "info");
   });
@@ -159,7 +157,7 @@ describe("pi extension v2 wiring", () => {
     installFakeAdapter(events);
     lunarouteExtension(pi);
     const ctx = fakeContext({
-      modelRegistry: { getProviderAuthStatus: () => ({ configured: true }), getApiKeyForProvider: () => Promise.resolve("lr_key") },
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
     });
     await handlers.get("session_start")?.({}, ctx);
     expect(ctx.ui.notify).not.toHaveBeenCalled();
@@ -168,7 +166,7 @@ describe("pi extension v2 wiring", () => {
   test("session_start is silent when UI is unavailable", async () => {
     const { pi, handlers } = fakePi();
     lunarouteExtension(pi);
-    const ctx = fakeContext({ hasUI: false, modelRegistry: { getProviderAuthStatus: () => ({ configured: false }), getApiKeyForProvider: () => Promise.resolve(undefined) } });
+    const ctx = fakeContext({ hasUI: false, modelRegistry: { getApiKeyForProvider: () => Promise.resolve(undefined) } });
     await handlers.get("session_start")?.({}, ctx);
     expect(ctx.ui.notify).not.toHaveBeenCalled();
   });
@@ -178,7 +176,7 @@ describe("pi extension v2 wiring", () => {
     const adapter = installFakeAdapter(events);
     lunarouteExtension(pi);
     const ctx = fakeContext({
-      modelRegistry: { getProviderAuthStatus: () => ({ configured: true }), getApiKeyForProvider: () => Promise.resolve("lr_key") },
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
     });
     await handlers.get("session_start")?.({}, ctx);
     expect(adapter.requests).toHaveLength(1);
@@ -191,7 +189,7 @@ describe("pi extension v2 wiring", () => {
     const { pi, handlers } = fakePi(); // no adapter installed
     lunarouteExtension(pi);
     const ctx = fakeContext({
-      modelRegistry: { getProviderAuthStatus: () => ({ configured: true }), getApiKeyForProvider: () => Promise.resolve("lr_key") },
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
     });
     await handlers.get("session_start")?.({}, ctx);
     expect(ctx.ui.notify).toHaveBeenCalledWith(MCP_INSTALL_HINT, "info");
@@ -209,7 +207,7 @@ describe("pi extension v2 wiring", () => {
     });
     lunarouteExtension(pi);
     const ctx = fakeContext({
-      modelRegistry: { getProviderAuthStatus: () => ({ configured: true }), getApiKeyForProvider: () => Promise.resolve("lr_key") },
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
     });
     await handlers.get("session_start")?.({}, ctx);
     const calls = ctx.ui.notify.mock.calls as [string, string?][];
@@ -222,7 +220,7 @@ describe("pi extension v2 wiring", () => {
     const adapter = installFakeAdapter(events);
     lunarouteExtension(pi);
     const ctx = fakeContext({
-      modelRegistry: { getProviderAuthStatus: () => ({ configured: false }), getApiKeyForProvider: () => Promise.resolve(undefined) },
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve(undefined) },
     });
     await handlers.get("session_start")?.({}, ctx);
     expect(adapter.requests).toHaveLength(0);
@@ -235,7 +233,7 @@ describe("pi extension v2 wiring", () => {
     const adapter = installFakeAdapter(events);
     lunarouteExtension(pi);
     const ctx = fakeContext({
-      modelRegistry: { getProviderAuthStatus: () => ({ configured: true }), getApiKeyForProvider: () => Promise.resolve("lr_key") },
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
     });
     await handlers.get("session_start")?.({}, ctx);
     await handlers.get("session_start")?.({}, ctx); // no shutdown in between
@@ -250,7 +248,7 @@ describe("pi extension v2 wiring", () => {
     const adapter = installFakeAdapter(events);
     lunarouteExtension(pi);
     const ctx = fakeContext({
-      modelRegistry: { getProviderAuthStatus: () => ({ configured: true }), getApiKeyForProvider: () => Promise.resolve("lr_key") },
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
     });
     await handlers.get("session_start")?.({}, ctx);
     await handlers.get("session_shutdown")?.({}, ctx);
@@ -262,7 +260,7 @@ describe("pi extension v2 wiring", () => {
     const adapter = installFakeAdapter(events);
     lunarouteExtension(pi);
     const ctx = fakeContext({
-      modelRegistry: { getProviderAuthStatus: () => ({ configured: true }), getApiKeyForProvider: () => Promise.resolve("lr_old") },
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_old") },
     });
     await handlers.get("session_start")?.({}, ctx);
     expect(adapter.requests).toHaveLength(1);
@@ -393,7 +391,7 @@ describe("model persistence and auto-select", () => {
     lunarouteExtension(pi);
     const ctx = fakeContext({
       model: { id: "existing", name: "existing", api: "anthropic-messages", provider: "anthropic", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 0, maxTokens: 0 } as unknown as Model<Api>,
-      modelRegistry: { getProviderAuthStatus: () => ({ configured: true }), getApiKeyForProvider: () => Promise.resolve("lr_key") },
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
     });
     await handlers.get("session_start")?.({}, ctx);
     await refreshModelsOf(registerProvider)(fakeRefreshContext());
