@@ -4,7 +4,7 @@
 
 **Goal:** Stop `@lunaroute/pi-extension` from crashing on oh-my-pi (omp) hosts by replacing the two mainline-only API calls with equivalents that exist on both mainline pi and omp.
 
-**Architecture:** Two surgical substitutions, no host detection and no omp-specific code paths: (1) the session_start first-run hint derives from the `getApiKeyForProvider` result instead of `getProviderAuthStatus`; (2) the login method menu feature-detects `callbacks.onSelect` and defaults to the browser flow when the host doesn't provide one (omp's `OAuthController`). On mainline pi both changes are semantically identical to today's behavior; on omp they turn hard crashes into working flows.
+**Architecture:** Two surgical substitutions, no host detection and no omp-specific code paths: (1) the session_start first-run hint derives from the `getApiKeyForProvider` result instead of `getProviderAuthStatus`; (2) the login method menu feature-detects `callbacks.onSelect` and defaults to the browser flow when the host doesn't provide one (omp's `OAuthController`). On mainline pi both changes are semantically identical to today's behavior; on omp they turn hard crashes into non-crashing flows — login and startup complete without throwing. This is deliberately *not* full omp usability: on omp the raw-API-key paste option is unreachable (non-goal, below) and a cold-start omp install has an empty model catalog until the persisted store is populated from a mainline pi run.
 
 **Tech Stack:** TypeScript, vitest, `@earendil-works/pi-coding-agent` types only (no omp imports — omp compatibility comes solely from using APIs present on both hosts).
 
@@ -16,7 +16,8 @@
 - Mainline pi remains the only *supported* host: `peerDependencies` floor `>=0.84.1` is unchanged; no dependency changes at all.
 - omp compatibility must come only from substituting APIs that exist on both hosts or runtime `typeof` feature-detects that are dead code on mainline.
 - Everything must typecheck against `@earendil-works/pi-coding-agent` types (`npm run typecheck`); the test fakes simulate the omp runtime shape via casts, never via new production types.
-- Gate for every task: `npm run check` (typecheck + all tests) exits 0.
+- Gate for every task: `npm run check` (typecheck + all tests) exits 0 **before that task's commit** (the targeted vitest runs are for red/green isolation only).
+- omp non-goals, stated up front so no task "fixes" them: (a) pasting a raw `lr_` API key is mainline-only — omp's login has no method menu, and the loopback-timeout fallback in `loginWithBrowser` pastes a *callback URL*, not a key; (b) an omp-only cold start has no model catalog until `~/.pi/agent/models-store.json` is populated by a mainline pi run (P3 would change this; out of scope); (c) a `getApiKeyForProvider` rejection keeps today's semantics — the handler dies into the host's extension-error channel; the only ordering delta is the hint no longer precedes a hypothetical lookup throw, and mainline's implementation never throws (internal try/catch → `undefined`).
 - Reference evidence (from kata npw2, verified against omp `main` and mainline 0.84.1/0.85.0):
   - omp `ModelRegistry` has `getApiKeyForProvider(provider): Promise<string|undefined>` but no `getProviderAuthStatus` (mainline has both: model-registry.d.ts:31/36 at 0.84.1 and 0.85.0).
   - omp `AuthStorage.login` passes exactly `{onAuth, onProgress, onPrompt, onManualCodeInput, signal, fetch}` to a provider's `login()` — `onSelect` is never passed; `onAuth`/`onPrompt` are always provided.
@@ -114,10 +115,10 @@ with:
     if (!key) return; // not logged in — silent, no MCP registration
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 4: Run the full gate to verify green**
 
-Run: `npx vitest run tests/index.test.ts`
-Expected: all PASS.
+Run: `npm run check`
+Expected: typecheck clean, all index tests PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -146,8 +147,8 @@ In `tests/login.test.ts`, inside the `describe("lunaroute login", ...)` block, a
 
 ```ts
   test("host without onSelect (omp-shaped) defaults to the browser flow", async () => {
-    const { onSelect: _omitted, onAuth, ...rest } = fakeCallbacks();
-    const cb = rest as unknown as OAuthLoginCallbacks; // no onSelect key, like omp's OAuthController
+    const cb = { ...fakeCallbacks() } as OAuthLoginCallbacks;
+    delete (cb as Partial<OAuthLoginCallbacks>).onSelect; // property absent, like omp's OAuthController
     const creds = await lunarouteLogin(cb, { LUNAROUTE_FRONT_URL: "http://front", LUNAROUTE_API_URL: "http://api" }, {
       startLoopback: async () => fakeLoopback("the-code", "the-state"),
       exchange: vi.fn(async () => ({ full_key: "lr_omp", org_id: "o", user_email: "u" })),
@@ -155,11 +156,11 @@ In `tests/login.test.ts`, inside the `describe("lunaroute login", ...)` block, a
       verifier: () => "the-verifier",
     });
     expect(creds.access).toBe("lr_omp");
-    expect(onAuth).toHaveBeenCalled();
+    expect(cb.onAuth).toHaveBeenCalled(); // omp always provides onAuth
   });
 ```
 
-(The `_omitted` underscore is the sanctioned way to drop a property via rest-destructuring; TS's `noUnusedLocals` does not flag it.)
+(The spread-then-`delete` keeps every other callback in place — omp's runtime always passes `onAuth`/`onPrompt`/`onProgress` — so the test exercises the true omp shape: menu missing, everything else present. `expect(cb.onAuth).toHaveBeenCalled()` matches the typing style of existing assertions like `expect(cb.onPrompt).toHaveBeenCalledWith(...)`.)
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -185,8 +186,9 @@ with:
 
 ```ts
   // Hosts whose login UI has no method menu (oh-my-pi's OAuthController passes
-  // no onSelect) get the browser flow directly; paste stays reachable via the
-  // loopback-timeout fallback in loginWithBrowser.
+  // no onSelect) get the browser flow directly. Pasting a raw API key is a
+  // mainline-only option on such hosts (documented non-goal); the loopback
+  // timeout fallback pastes a callback URL, not a key.
   const method = typeof callbacks.onSelect === "function"
     ? await callbacks.onSelect({
         message: "Log in to LunaRoute",
@@ -199,10 +201,10 @@ with:
   if (!method) throw new Error("Login cancelled");
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 4: Run the full gate to verify green**
 
-Run: `npx vitest run tests/login.test.ts`
-Expected: all PASS (the new test plus the existing onSelect/menu tests, which keep covering the mainline path).
+Run: `npm run check`
+Expected: typecheck clean, all login tests PASS (the new test plus the existing onSelect/menu tests, which keep covering the mainline path).
 
 - [ ] **Step 5: Commit**
 
@@ -228,15 +230,17 @@ In `README.md`, extend the Requirements section:
 ```markdown
 ## Requirements
 
-- Pi **>= 0.84.1**.
+- Mainline pi (`@earendil-works/pi-coding-agent`) **>= 0.84.1** — the supported
+  host. The version floor and the support guarantee below apply to mainline pi.
 - A LunaRoute account with access to at least one organization.
 
-**Host compatibility:** mainline pi (`@earendil-works/pi-coding-agent`)
-is the supported host. The [omp](https://github.com/can1357/oh-my-pi) fork
-works on a best-effort, untested basis as of this release: login and startup
-no longer crash on it, but the live model-catalog refresh is mainline-only —
-on omp the model list comes from the persisted store (re-login or first
-`/login lunaroute` on mainline refreshes it). Report omp-specific issues at
+**Host compatibility:** the [omp](https://github.com/can1357/oh-my-pi) fork is
+best-effort and not integration-tested on a real omp host: login and startup
+no longer crash on it, but (a) the raw-API-key paste option is mainline-only —
+omp logins use the browser flow; and (b) omp does not refresh the model
+catalog live — an omp-only install has an empty model list until the store is
+populated by running `/login lunaroute` once on mainline pi on the same
+machine. Report omp-specific issues at
 <https://github.com/lunaroute/lunaroute-pi-extension/issues>.
 ```
 
@@ -255,8 +259,10 @@ git commit -m "docs: host compatibility — mainline pi supported, omp best-effo
 - [ ] **Step 4: Record progress on the kata**
 
 ```bash
-kata comment npw2 --body "Implemented P1+P2 (posture B) on feat/npw2-omp-compat: session_start hint now derives from getApiKeyForProvider (omp-shaped fake host in tests reproduces the original TypeError as the red step); login defaults to browser flow when onSelect is absent; README states mainline-supported / omp best-effort. Full gate (npm run check) green."
+kata comment npw2 --body "Implemented P1+P2 (posture B) on feat/npw2-omp-compat: session_start hint now derives from getApiKeyForProvider (omp-shaped fake host in tests reproduces the original TypeError as the red step); login defaults to browser flow when onSelect is absent — note: raw-API-key paste is mainline-only on omp (loopback fallback pastes a callback URL, not a key), and omp cold start needs a mainline-populated model store; README states mainline-supported / omp best-effort. Full gate (npm run check) green."
 ```
+
+This comment also corrects the earlier claim on this kata (P2 in the plan comment) that the paste path stays reachable on omp — it does not; that path requires `onSelect`, which omp never passes.
 
 (Do NOT close the kata — closing asserts the work is verified end-to-end; the owner closes after review/merge.)
 
