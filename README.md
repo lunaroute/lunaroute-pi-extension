@@ -24,8 +24,18 @@ hosted LunaRoute MCP server (image generation and more) is wired up for you too.
 
 ## Requirements
 
-- Pi **>= 0.84.1**.
+- Mainline pi (`@earendil-works/pi-coding-agent`) **>= 0.84.1** — the supported
+  host. The version floor and the support guarantee below apply to mainline pi.
 - A LunaRoute account with access to at least one organization.
+
+**Host compatibility:** the [omp](https://github.com/can1357/oh-my-pi) fork is
+best-effort and not integration-tested on a real omp host: login and startup
+no longer crash on it, but (a) the raw-API-key paste option is mainline-only —
+omp logins use the browser flow; and (b) omp does not refresh the model
+catalog live — an omp-only install has an empty model list until the store is
+populated by running `/login lunaroute` once on mainline pi on the same
+machine. Report omp-specific issues at
+<https://github.com/lunaroute/lunaroute-pi-extension/issues>.
 
 ## Quick start
 
