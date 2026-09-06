@@ -149,13 +149,19 @@ export async function lunarouteLogin(
   env: NodeJS.ProcessEnv,
   deps: LoginDeps = defaultDeps,
 ): Promise<OAuthCredentials> {
-  const method = await callbacks.onSelect({
-    message: "Log in to LunaRoute",
-    options: [
-      { id: "browser", label: "Log in with browser" },
-      { id: "paste", label: "Paste an API key" },
-    ],
-  });
+  // Hosts whose login UI has no method menu (oh-my-pi's OAuthController passes
+  // no onSelect) get the browser flow directly. Pasting a raw API key is a
+  // mainline-only option on such hosts (documented non-goal); the loopback
+  // timeout fallback pastes a callback URL, not a key.
+  const method = typeof callbacks.onSelect === "function"
+    ? await callbacks.onSelect({
+        message: "Log in to LunaRoute",
+        options: [
+          { id: "browser", label: "Log in with browser" },
+          { id: "paste", label: "Paste an API key" },
+        ],
+      })
+    : "browser";
   if (!method) throw new Error("Login cancelled");
 
   let key: string;

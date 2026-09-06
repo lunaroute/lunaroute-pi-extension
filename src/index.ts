@@ -63,13 +63,13 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     currentModel = ctx.model;
-    if (ctx.hasUI) {
-      const status = ctx.modelRegistry.getProviderAuthStatus(LUNAROUTE_PROVIDER);
-      if (!status?.configured) {
-        ctx.ui.notify(firstRunHint(), "info");
-      }
-    }
     const key = await ctx.modelRegistry.getApiKeyForProvider(LUNAROUTE_PROVIDER);
+    // Hint derives from the key lookup (works on hosts without
+    // getProviderAuthStatus, e.g. oh-my-pi): a resolvable key — stored OAuth
+    // or ambient apiKey — means the user is configured.
+    if (ctx.hasUI && !key) {
+      ctx.ui.notify(firstRunHint(), "info");
+    }
     if (!key) return; // not logged in — silent, no MCP registration
     const { registered, error } = registerLunarouteMcp(pi, key, mcpDeps);
     if (error && ctx.hasUI) {

@@ -156,6 +156,19 @@ describe("lunaroute login", () => {
     expect(creds.refresh).toBe("");
   });
 
+  test("host without onSelect (omp-shaped) defaults to the browser flow", async () => {
+    const cb = { ...fakeCallbacks() } as OAuthLoginCallbacks;
+    delete (cb as Partial<OAuthLoginCallbacks>).onSelect; // property absent, like omp's OAuthController
+    const creds = await lunarouteLogin(cb, { LUNAROUTE_FRONT_URL: "http://front", LUNAROUTE_API_URL: "http://api" }, {
+      startLoopback: async () => fakeLoopback("the-code", "the-state"),
+      exchange: vi.fn(async () => ({ full_key: "lr_omp", org_id: "o", user_email: "u" })),
+      state: () => "the-state",
+      verifier: () => "the-verifier",
+    });
+    expect(creds.access).toBe("lr_omp");
+    expect(cb.onAuth).toHaveBeenCalled(); // omp always provides onAuth
+  });
+
   test("lunarouteLogin throws if the user cancels the method select", async () => {
     const cb = fakeCallbacks({ onSelect: vi.fn(async () => undefined) });
     await expect(lunarouteLogin(cb, {})).rejects.toThrow("Login cancelled");
