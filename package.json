@@ -1,6 +1,6 @@
 {
   "name": "@lunaroute/pi-extension",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Pi extension for LunaRoute: login, model sync, and request attribution.",
   "type": "module",
   "keywords": [
@@ -33,7 +33,13 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.84.1",
-    "@earendil-works/pi-ai": ">=0.84.1"
+    "@earendil-works/pi-ai": ">=0.84.1",
+    "pi-mcp-adapter": ">=2.28.0"
+  },
+  "peerDependenciesMeta": {
+    "pi-mcp-adapter": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.1",

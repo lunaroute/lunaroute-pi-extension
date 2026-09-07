@@ -67,7 +67,9 @@ persisted to any MCP config.
 
 - **Requires pi-mcp-adapter.** Tools surface through the adapter's `mcp()`
   proxy tool, not as first-class Pi tools. Install it with
-  `pi install npm:pi-mcp-adapter`.
+  `pi install npm:pi-mcp-adapter`. It is declared as an *optional* peer
+  dependency (`>=2.28.0`) — metadata only: installing the extension never
+  pulls the adapter in, and everything degrades gracefully without it.
 - **Logged out**: no registration occurs (silent). Log in with
   `/login lunaroute`.
 - **Logged in but adapter not installed**: you get a one-time install hint
