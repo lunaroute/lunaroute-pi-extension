@@ -5,6 +5,7 @@ import {
   LUNAROUTE_ENV_MCP_URL,
 } from "../src/lunaroute.js";
 import {
+  MCP_CONFIGURED_NOTICE,
   LUNAROUTE_MCP_SERVER_NAME,
   MCP_INSTALL_HINT,
   MCP_RUNTIME_REGISTER_EVENT,
@@ -14,6 +15,10 @@ import {
   disposeLunarouteMcp,
   maybeShowAdapterHint,
   registerLunarouteMcp,
+  isLunarouteMcpConfigured,
+  isLunarouteServerConfigured,
+  maybeShowConfiguredNotice,
+  _setAdapterConfigLoader,
   type McpRuntimeRegistrationRequest,
 } from "../src/mcp.js";
 
@@ -62,7 +67,6 @@ const deps = { env: {}, version: "0.2.0", sessionId: "sess-1" };
 beforeEach(() => {
   _resetMcpState();
 });
-
 describe("buildMcpDefinition", () => {
   test("uses the default MCP url and the api key + attribution headers, auth disabled", () => {
     const def = buildMcpDefinition("lr_key", deps);
@@ -161,6 +165,57 @@ describe("disposeLunarouteMcp", () => {
 
   test("is a no-op when nothing is registered", async () => {
     await expect(disposeLunarouteMcp()).resolves.toBeUndefined();
+  });
+});
+
+describe("isLunarouteServerConfigured", () => {
+  test("true when a server is named lunaroute (any url)", () => {
+    expect(isLunarouteServerConfigured({ lunaroute: { url: "http://localhost:1/mcp" } }, DEFAULT_MCP_URL)).toBe(true);
+    expect(isLunarouteServerConfigured({ lunaroute: {} }, DEFAULT_MCP_URL)).toBe(true);
+  });
+
+  test("true when a differently-named server points at the LunaRoute MCP url", () => {
+    expect(isLunarouteServerConfigured({ "lr-hosted": { url: DEFAULT_MCP_URL } }, DEFAULT_MCP_URL)).toBe(true);
+  });
+
+  test("false for unrelated servers or no servers", () => {
+    expect(isLunarouteServerConfigured({ other: { url: "https://example.com/mcp" } }, DEFAULT_MCP_URL)).toBe(false);
+    expect(isLunarouteServerConfigured({}, DEFAULT_MCP_URL)).toBe(false);
+    expect(isLunarouteServerConfigured(undefined, DEFAULT_MCP_URL)).toBe(false);
+  });
+});
+
+describe("isLunarouteMcpConfigured", () => {
+  test("true when the loaded adapter config contains the server", async () => {
+    _setAdapterConfigLoader(async () => ({ mcpServers: { [LUNAROUTE_MCP_SERVER_NAME]: { url: DEFAULT_MCP_URL } } }));
+    expect(await isLunarouteMcpConfigured({})).toBe(true);
+  });
+
+  test("honors LUNAROUTE_MCP_URL when matching by url", async () => {
+    _setAdapterConfigLoader(async () => ({ mcpServers: { hosted: { url: "http://localhost:9999/mcp" } } }));
+    expect(await isLunarouteMcpConfigured({ [LUNAROUTE_ENV_MCP_URL]: "http://localhost:9999/mcp" })).toBe(true);
+  });
+
+  test("false when the adapter config is unavailable (import fails)", async () => {
+    _setAdapterConfigLoader(async () => null);
+    expect(await isLunarouteMcpConfigured({})).toBe(false);
+  });
+
+  test("false when the loader throws", async () => {
+    _setAdapterConfigLoader(async () => {
+      throw new Error("boom");
+    });
+    expect(await isLunarouteMcpConfigured({})).toBe(false);
+  });
+});
+
+describe("maybeShowConfiguredNotice", () => {
+  test("shows the defer notice once, then is silent", () => {
+    const notify = vi.fn();
+    expect(maybeShowConfiguredNotice({ notify })).toBe(true);
+    expect(notify).toHaveBeenCalledWith(MCP_CONFIGURED_NOTICE, "info");
+    expect(maybeShowConfiguredNotice({ notify })).toBe(false);
+    expect(notify).toHaveBeenCalledTimes(1);
   });
 });
 

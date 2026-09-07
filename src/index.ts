@@ -12,7 +12,7 @@ import {
 } from "./lunaroute.js";
 import { lunarouteOAuth } from "./login.js";
 import { createRefreshModels } from "./discovery.js";
-import { disposeLunarouteMcp, maybeShowAdapterHint, registerLunarouteMcp } from "./mcp.js";
+import { disposeLunarouteMcp, isAlreadyRegisteredError, isLunarouteMcpConfigured, maybeShowAdapterHint, maybeShowConfiguredNotice, registerLunarouteMcp } from "./mcp.js";
 
 export default function lunarouteExtension(pi: ExtensionAPI): void {
   const sessionId = generateSessionId();
@@ -36,6 +36,12 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
       async login(callbacks) {
         const creds = await lunarouteOAuth.login(callbacks);
         await disposeLunarouteMcp();
+        // A user-configured LunaRoute MCP wins: skip registration (the
+        // adapter would reject ours by name anyway).
+        if (await isLunarouteMcpConfigured(process.env)) {
+          maybeShowConfiguredNotice({ notify: (m) => callbacks.onProgress?.(m) });
+          return creds;
+        }
         const { registered, error } = registerLunarouteMcp(pi, creds.access, mcpDeps);
         if (error) console.warn(`LunaRoute MCP re-register failed: ${error.message}`);
         else if (!registered) maybeShowAdapterHint({ notify: (m) => callbacks.onProgress?.(m) });
@@ -71,8 +77,18 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
       ctx.ui.notify(firstRunHint(), "info");
     }
     if (!key) return; // not logged in — silent, no MCP registration
+    // A user-configured LunaRoute MCP server wins (the adapter keeps the
+    // configured server and rejects ours by name): defer to it.
+    if (await isLunarouteMcpConfigured(process.env)) {
+      if (ctx.hasUI) maybeShowConfiguredNotice(ctx.ui);
+      return;
+    }
     const { registered, error } = registerLunarouteMcp(pi, key, mcpDeps);
-    if (error && ctx.hasUI) {
+    if (error && isAlreadyRegisteredError(error) && ctx.hasUI) {
+      // Raced: the config appeared (or a custom --mcp-config was used) after
+      // our check. Same defer outcome, same one-time notice.
+      maybeShowConfiguredNotice(ctx.ui);
+    } else if (error && ctx.hasUI) {
       ctx.ui.notify(`LunaRoute MCP registration failed: ${error.message}`, "warning");
     } else if (!registered && ctx.hasUI) {
       maybeShowAdapterHint(ctx.ui);
