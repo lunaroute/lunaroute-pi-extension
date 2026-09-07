@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { LUNAROUTE_PROVIDER, firstRunHint } from "../src/lunaroute.js";
-import { MCP_INSTALL_HINT, MCP_RUNTIME_REGISTER_EVENT, _resetMcpState, type McpRuntimeRegistrationRequest } from "../src/mcp.js";
+import { MCP_CONFIGURED_NOTICE, MCP_INSTALL_HINT, MCP_RUNTIME_REGISTER_EVENT, _resetMcpState, _setAdapterConfigLoader, type McpRuntimeRegistrationRequest } from "../src/mcp.js";
 import lunarouteExtension from "../src/index.js";
 
 type SessionHandler = (event: unknown, ctx: FakeContext) => void | Promise<void>;
@@ -90,6 +90,9 @@ describe("pi extension v2 wiring", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
     _resetMcpState();
+    // Deterministic baseline: no user-configured MCP servers (the real loader
+    // would read the host's actual config files).
+    _setAdapterConfigLoader(async () => ({ mcpServers: {} }));
   });
 
   test("registers the lunaroute provider with identity, auth, headers, refreshModels, and store-seeded models", () => {
@@ -215,6 +218,40 @@ describe("pi extension v2 wiring", () => {
     expect(calls.some(([m]) => m === MCP_INSTALL_HINT)).toBe(false);
   });
 
+  test("session_start defers to a user-configured lunaroute MCP server: no registration, one-time notice", async () => {
+    const { pi, handlers, events } = fakePi();
+    const adapter = installFakeAdapter(events);
+    _setAdapterConfigLoader(async () => ({ mcpServers: { lunaroute: { url: "https://mcp.lunaroute.com/mcp" } } }));
+    lunarouteExtension(pi);
+    const ctx = fakeContext({
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
+    });
+    await handlers.get("session_start")?.({}, ctx);
+    expect(adapter.requests).toHaveLength(0);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(MCP_CONFIGURED_NOTICE, "info");
+    // second session_start does not repeat the notice
+    await handlers.get("session_start")?.({}, ctx);
+    const notices = (ctx.ui.notify.mock.calls as string[][]).filter((c) => c[0] === MCP_CONFIGURED_NOTICE);
+    expect(notices).toHaveLength(1);
+  });
+
+  test("session_start treats the adapter's 'already registered' rejection as benign (notice, not warning)", async () => {
+    const { pi, handlers, events } = fakePi();
+    _setAdapterConfigLoader(async () => ({ mcpServers: {} })); // loader saw no server, but the adapter did
+    events.on(MCP_RUNTIME_REGISTER_EVENT, (raw) => {
+      const req = raw as McpRuntimeRegistrationRequest;
+      req.result = { ok: false, error: new Error('MCP server "lunaroute" is already registered') };
+    });
+    lunarouteExtension(pi);
+    const ctx = fakeContext({
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
+    });
+    await handlers.get("session_start")?.({}, ctx);
+    const calls = ctx.ui.notify.mock.calls as [string, string?][];
+    expect(calls.some(([m, t]) => m === MCP_CONFIGURED_NOTICE && t === "info")).toBe(true);
+    expect(calls.some(([m, t]) => m.startsWith("LunaRoute MCP registration failed") && t === "warning")).toBe(false);
+  });
+
   test("session_start does not hint or register when not logged in (no key)", async () => {
     const { pi, handlers, events } = fakePi();
     const adapter = installFakeAdapter(events);
@@ -316,6 +353,7 @@ describe("model persistence and auto-select", () => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     _resetMcpState();
+    _setAdapterConfigLoader(async () => ({ mcpServers: {} }));
   });
 
   function modelsResponse(data: unknown[]): Response {

@@ -78,6 +78,12 @@ persisted to any MCP config.
   without restarting Pi.
 - Org/user/tool policy is enforced server-side and shapes `tools/list` — an
   empty tool list is a valid outcome, not an error.
+- **Already configured LunaRoute MCP yourself?** Your config wins. The
+  extension detects a `lunaroute` server (or any server pointing at the
+  hosted LunaRoute MCP URL) in your MCP config and skips its own
+  registration — no duplicate tools, no warnings, just a one-time notice.
+  Note your config's key is static: `/login lunaroute` rotation won't update
+  it, so edit the config yourself when you rotate.
 - Overriding `LUNAROUTE_MCP_URL` sends your `lr_` key to that endpoint; prefer
   HTTPS in production (HTTP is intended only for local development).
 
