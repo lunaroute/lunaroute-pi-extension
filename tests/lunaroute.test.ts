@@ -143,6 +143,52 @@ describe("lunaroute v2 helpers", () => {
     expect(result.model.input).toEqual(["text", "image"]);
   });
 
+  test("mapCatalogEntry skips an image-generation model with a typed reason (kata gx0e)", () => {
+    const result = mapCatalogEntry({
+      id: "flux2-klein",
+      display_name: "FLUX.2 Klein",
+      context_window: 0,
+      max_output_tokens: 0,
+      capabilities: { image_generation: true },
+    });
+    expect(result).toEqual({ ok: false, reason: "non_chat_capability", id: "flux2-klein", capability: "image_generation" });
+  });
+
+  test("mapCatalogEntry maps normally when image_generation is absent or explicitly false", () => {
+    const capabilitySets: (Record<string, boolean> | undefined)[] = [
+      undefined,
+      {},
+      { image_generation: false },
+      { tools: true },
+    ];
+    for (const capabilities of capabilitySets) {
+      const result = mapCatalogEntry({ id: "chat-1", capabilities });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.model.id).toBe("chat-1");
+      expect(result.model.input).toEqual(["text"]);
+    }
+  });
+
+  test("mapCatalogEntry rejects image-generation before the reasoning/pi-block check", () => {
+    const result = mapCatalogEntry({
+      id: "flux2-reasoner",
+      capabilities: { image_generation: true, reasoning: true },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("non_chat_capability");
+    expect(result.reason).not.toBe("reasoning_missing_pi_block");
+  });
+
+  test("mapCatalogEntry does not map an image-generation model as a vision model", () => {
+    const result = mapCatalogEntry({
+      id: "flux2-klein",
+      capabilities: { image_generation: true, vision: true },
+    });
+    expect(result.ok).toBe(false);
+  });
+
   test("mapCatalogEntry maps a reasoning model with the pi block (thinkingLevelMap + compat)", () => {
     const result = mapCatalogEntry({
       id: "glm-5.2",
