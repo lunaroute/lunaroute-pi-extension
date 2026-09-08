@@ -16,6 +16,7 @@ import { Type, type TSchema } from "typebox";
 import { buildAttributionHeaders, resolveMcpUrl } from "./lunaroute.js";
 import {
 	DEFAULT_SETTINGS,
+	readSettings,
 	resolveSearchProvider,
 	webToolsEnabled,
 	type ConcreteSearchProvider,
@@ -355,9 +356,11 @@ export interface WebToolBuildDeps {
 	client: LunarouteMcpClient;
 	/** Server-side MCP tool name (resolved from tools/list, not assumed). */
 	mcpToolName: string;
-	/** Default search provider from user settings (kata bjy9); the per-call
-	 * param still wins. Undefined = server default (key omitted on the wire). */
-	defaultProvider?: ConcreteSearchProvider;
+	/** Default search provider (kata bjy9), resolved at CALL time from the
+	 * settings file so a `/lunaroute` change applies to the very next search
+	 * without re-registration. Returning undefined = server default (the
+	 * key is omitted on the wire). The per-call param still wins. */
+	defaultProvider?: () => ConcreteSearchProvider | undefined;
 }
 
 const webSearchSchema = Type.Object({
@@ -384,8 +387,9 @@ export function buildWebSearchTool(deps: WebToolBuildDeps): ToolDefinition<typeo
 		parameters: webSearchSchema,
 		async execute(_toolCallId, params, signal, onUpdate) {
 			onUpdate?.({ content: [{ type: "text", text: "Searching the web via LunaRoute…" }], details: {} });
-			// Per-call provider param wins; the user setting is only the default.
-			const provider = params.provider ?? deps.defaultProvider;
+			// Per-call provider param wins; the default is resolved at call time
+			// from the settings file (source of truth — kata bjy9 live-apply).
+			const provider = params.provider ?? deps.defaultProvider?.();
 			const call = await deps.client.callTool(
 				deps.mcpToolName,
 				{ query: params.query, count: params.count, ...(provider !== undefined && { provider }) },
@@ -653,7 +657,7 @@ export async function registerWebTools(
 				buildWebSearchTool({
 					client,
 					mcpToolName: searchTool,
-					defaultProvider: resolveSearchProvider(settings),
+					defaultProvider: () => resolveSearchProvider(readSettings(deps.env)),
 				}),
 			);
 		if (needFetch && fetchTool) register(buildWebFetchTool({ client, mcpToolName: fetchTool }));

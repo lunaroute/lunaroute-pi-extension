@@ -1,5 +1,8 @@
 import { initTheme, type ExtensionAPI, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import {
 	buildWebFetchTool,
@@ -369,21 +372,21 @@ describe("buildWebSearchTool", () => {
 
 	test("execute injects the default provider when the model omitted it (kata bjy9)", async () => {
 		const capture: { name?: string; args?: Record<string, unknown> } = {};
-		const tool = buildWebSearchTool({ client: fakeClient(PAYLOAD_TEXT, capture), mcpToolName: "web_search", defaultProvider: "kagi" });
+		const tool = buildWebSearchTool({ client: fakeClient(PAYLOAD_TEXT, capture), mcpToolName: "web_search", defaultProvider: () => "kagi" });
 		await tool.execute("tc_dp", { query: "x" }, undefined, undefined, {} as never);
 		expect(capture.args).toEqual({ query: "x", provider: "kagi" });
 	});
 
 	test("per-call provider beats the default provider (kata bjy9)", async () => {
 		const capture: { name?: string; args?: Record<string, unknown> } = {};
-		const tool = buildWebSearchTool({ client: fakeClient(PAYLOAD_TEXT, capture), mcpToolName: "web_search", defaultProvider: "kagi" });
+		const tool = buildWebSearchTool({ client: fakeClient(PAYLOAD_TEXT, capture), mcpToolName: "web_search", defaultProvider: () => "kagi" });
 		await tool.execute("tc_ov", { query: "x", provider: "brave" }, undefined, undefined, {} as never);
 		expect(capture.args).toEqual({ query: "x", provider: "brave" });
 	});
 
 	test("no default provider and no per-call provider omits the key entirely", async () => {
 		const capture: { name?: string; args?: Record<string, unknown> } = {};
-		const tool = buildWebSearchTool({ client: fakeClient(PAYLOAD_TEXT, capture), mcpToolName: "web_search" });
+		const tool = buildWebSearchTool({ client: fakeClient(PAYLOAD_TEXT, capture), mcpToolName: "web_search", defaultProvider: () => undefined });
 		await tool.execute("tc_no", { query: "x" }, undefined, undefined, {} as never);
 		expect(capture.args).toEqual({ query: "x" });
 		expect("provider" in (capture.args ?? {})).toBe(false);
@@ -569,7 +572,7 @@ describe("registerWebTools", () => {
 		expect(registered).toHaveLength(0);
 	});
 
-	test("registered web_search carries the default provider from settings (kata bjy9)", async () => {
+	test("registered web_search resolves the default provider from the settings file at call time (kata bjy9)", async () => {
 		const { pi, registered } = fakePi();
 		const log: { method: string; params?: unknown }[] = [];
 		const fetchImpl = mcpFetch(
@@ -583,9 +586,13 @@ describe("registerWebTools", () => {
 			},
 			log,
 		);
+		// Settings file in a temp agent dir — the tool must read it per call.
+		const agentDir = mkdtempSync(join(tmpdir(), "bjy9-provider-"));
+		const env = { PI_CODING_AGENT_DIR: agentDir } as NodeJS.ProcessEnv;
+		writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ searchProvider: "kagi" }));
 		const result = await registerWebTools(pi, {
 			...REG_DEPS,
-			settings: { mcp: "on", webTools: "on", searchProvider: "kagi" },
+			env,
 			fetchImpl,
 		});
 		expect(result.webSearch).toBe("registered");
@@ -594,10 +601,20 @@ describe("registerWebTools", () => {
 			| undefined;
 		expect(search).toBeTruthy();
 		await search!.execute("tc_1", { query: "x" }, undefined, undefined, undefined);
-		const call = log.find((e) => e.method === "tools/call");
-		expect((call?.params as { name: string; arguments: Record<string, unknown> }).arguments).toEqual({
+		const call1 = log.find((e) => e.method === "tools/call");
+		expect((call1?.params as { name: string; arguments: Record<string, unknown> }).arguments).toEqual({
 			query: "x",
 			provider: "kagi",
+		});
+		// Regression (found in the live TUI smoke): a settings change must apply
+		// to the very next call — the provider must not be baked in at
+		// registration time.
+		writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ searchProvider: "exa" }));
+		await search!.execute("tc_2", { query: "y" }, undefined, undefined, undefined);
+		const calls = log.filter((e) => e.method === "tools/call");
+		expect((calls.at(-1)?.params as { name: string; arguments: Record<string, unknown> }).arguments).toEqual({
+			query: "y",
+			provider: "exa",
 		});
 	});
 
