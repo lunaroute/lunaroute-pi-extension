@@ -118,7 +118,16 @@ export type GatewayModelObject = {
 
 export type CatalogMappingResult =
   | { ok: true; model: ProviderModelConfig }
-  | { ok: false; reason: "reasoning_missing_pi_block"; id: string };
+  | { ok: false; reason: "reasoning_missing_pi_block"; id: string }
+  | { ok: false; reason: "non_chat_capability"; id: string; capability: string };
+
+/** Gateway capability tags that mark a catalog entry as unusable for chat
+ * completions. Pi's chat Model schema has nowhere to represent such models —
+ * `input: ["image"]` means image *input* (vision), not generation — so mapping
+ * them would leak them into the chat list indistinguishable from text models
+ * and force downstream name heuristics (kata gx0e). When the gateway starts
+ * tagging other non-chat families (e.g. embeddings), add the tag here. */
+export const NON_CHAT_CAPABILITIES: readonly string[] = ["image_generation"];
 
 function normalizeGatewayPiBlock(pi: GatewayPiBlock): {
   thinkingLevelMap?: ThinkingLevelMap;
@@ -131,7 +140,15 @@ function normalizeGatewayPiBlock(pi: GatewayPiBlock): {
   };
 }
 
+/** Map one gateway catalog entry to a ProviderModelConfig, or reject it with a
+ * typed reason. Non-chat entries (NON_CHAT_CAPABILITIES) are rejected first so
+ * they never surface as reasoning_missing_pi_block. */
 export function mapCatalogEntry(entry: GatewayModelObject): CatalogMappingResult {
+  for (const capability of NON_CHAT_CAPABILITIES) {
+    if (entry.capabilities?.[capability] === true) {
+      return { ok: false, reason: "non_chat_capability", id: entry.id, capability };
+    }
+  }
   const reasoning = entry.capabilities?.reasoning === true;
   const input: ("text" | "image")[] = entry.capabilities?.vision === true ? ["text", "image"] : ["text"];
   const gatewayPi = entry.client_compat?.pi ?? entry.pi;
