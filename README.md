@@ -12,6 +12,10 @@ hosted LunaRoute MCP server (image generation and more) is wired up for you too.
   capabilities all come through pre-mapped. Run `/model` and pick a
   `lunaroute/*` model. Re-fetched on every refresh, so new models appear as
   soon as they ship.
+- **First-class web search.** When no other extension provides web search,
+  a real `web_search` Pi tool is registered, backed by the hosted LunaRoute
+  MCP server — collapsed rows, expandable sources, parallel calls. A
+  `web_fetch` companion lights up automatically once the server offers one.
 - **Login that doesn't leak keys.** Browser-based login (PKCE) issues a fresh
   `lr_` key and stores it in `~/.pi/agent/auth.json` — never in a models file.
   Prefer a key you already have? Paste it.
@@ -89,6 +93,42 @@ persisted to any MCP config.
 - Overriding `LUNAROUTE_MCP_URL` sends your `lr_` key to that endpoint; prefer
   HTTPS in production (HTTP is intended only for local development).
 
+## Web tools
+
+When you are logged in and **no other extension already provides web
+search**, the extension registers a first-class `web_search` Pi tool that
+calls the hosted LunaRoute MCP server directly (Streamable HTTP) with your
+`lr_` key and the usual attribution headers — no `pi-mcp-adapter` install
+required.
+
+- **Detect-and-backfill.** At `session_start` the extension checks every
+  registered tool (built-ins, other extensions, adapter-prefixed names such
+  as `lunaroute_web_search`). If a web search tool already exists — e.g.
+  from pi-web-access or pi-web-search — LunaRoute stays silent: pi resolves
+  cross-extension tool-name conflicts first-registration-wins, so a
+  duplicate registration would be a silent no-op anyway.
+- **Server-gated.** The tool set is registered only for capabilities the
+  hosted MCP server actually offers (`tools/list` is consulted once).
+  As of v0.5.0 the server exposes `web_search`
+  (`{ query, count?, provider? }` → normalized results); `web_fetch` will
+  register automatically once the server ships it.
+- **Parallel by default.** Pi executes sibling tool calls concurrently — the
+  tool description nudges the model to batch multiple `web_search` calls in
+  one message. Output is truncated per pi's tool rules (50 KB / 2000 lines)
+  and oversized results are spilled to a temp file the model can read.
+- **Rendering.** Collapsed one-line summaries (`✓ 5 results · brave`),
+  expandable to the full result list (title / URL / snippet), spinner while
+  searching. Headless modes skip rendering; the text content still reaches
+  the model.
+- **Kill switch.** Set `LUNAROUTE_WEB_TOOLS=off` to disable. Tool-name
+  overrides: `LUNAROUTE_MCP_WEB_SEARCH_TOOL`,
+  `LUNAROUTE_MCP_WEB_FETCH_TOOL`.
+- Logged out: no tools are registered (silent), mirroring MCP registration.
+
+If both this extension and another web-search extension are active, pi's
+first-wins rule decides who owns the plain `web_search` name; use
+`--exclude-tools` if you need to pick manually.
+
 ## Configuration
 
 The gateway, API, and front URLs default to production and are overridable
@@ -128,6 +168,11 @@ Manual smoke test:
    the `lunaroute` server; call `generate_image` end-to-end.
 7. Without pi-mcp-adapter, logged in, confirm the one-time
    `pi install npm:pi-mcp-adapter` hint; logged out, confirm silence.
+8. Web tools: logged in with no other web-search extension installed, ask
+   the agent to search the web — the `web_search` tool should appear in the
+   tool list, run, and render collapsed with expandable sources. With
+   pi-web-access installed, confirm LunaRoute registers nothing
+   (`pi.getAllTools()` shows the other extension's `web_search`).
 
 Package dry run:
 

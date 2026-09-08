@@ -13,6 +13,7 @@ import {
 import { lunarouteOAuth } from "./login.js";
 import { createRefreshModels } from "./discovery.js";
 import { disposeLunarouteMcp, isAlreadyRegisteredError, isLunarouteMcpConfigured, maybeShowAdapterHint, maybeShowConfiguredNotice, registerLunarouteMcp } from "./mcp.js";
+import { registerWebTools } from "./web-tools.js";
 
 export default function lunarouteExtension(pi: ExtensionAPI): void {
   const sessionId = generateSessionId();
@@ -45,6 +46,10 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
         const { registered, error } = registerLunarouteMcp(pi, creds.access, mcpDeps);
         if (error) console.warn(`LunaRoute MCP re-register failed: ${error.message}`);
         else if (!registered) maybeShowAdapterHint({ notify: (m) => callbacks.onProgress?.(m) });
+        // First-class web tools too (kata akyg): a fresh login means the
+        // session_start path may have skipped registration (no key then).
+        // Fire-and-forget — registerWebTools never throws.
+        void registerWebTools(pi, { key: creds.access, ...mcpDeps }).catch(() => {});
         return creds;
       },
     },
@@ -93,6 +98,9 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
     } else if (!registered && ctx.hasUI) {
       maybeShowAdapterHint(ctx.ui);
     }
+    // First-class web_search/web_fetch (kata akyg): register only what is
+    // missing locally and offered by the hosted MCP server. Never throws.
+    await registerWebTools(pi, { key, ...mcpDeps });
   });
 
   pi.on("model_select", (event) => {

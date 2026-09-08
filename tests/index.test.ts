@@ -55,13 +55,35 @@ function installFakeAdapter(bus: Bus) {
   return { requests, dispose };
 }
 
-function fakePi() {
+function fakePi(options: { toolNames?: string[] } = {}) {
   const handlers = new Map<string, SessionHandler>();
   const registerProvider = vi.fn();
   const setModel = vi.fn(async (_model: unknown) => true);
   const events = fakeEventBus();
   const on = vi.fn((name: string, handler: SessionHandler) => handlers.set(name, handler));
-  return { pi: { registerProvider, on, events, setModel } as unknown as ExtensionAPI, registerProvider, setModel, on, handlers, events };
+  const registeredTools: { name: string }[] = [];
+  const toolNames = [...(options.toolNames ?? [])];
+  let activeTools = ["read", "bash"];
+  const registerTool = vi.fn((tool: { name: string }) => {
+    registeredTools.push(tool);
+    toolNames.push(tool.name);
+  });
+  const getAllTools = vi.fn(() => toolNames.map((name) => ({ name })));
+  const getActiveTools = vi.fn(() => [...activeTools]);
+  const setActiveTools = vi.fn((names: string[]) => {
+    activeTools = [...names];
+  });
+  const pi = {
+    registerProvider,
+    on,
+    events,
+    setModel,
+    registerTool,
+    getAllTools,
+    getActiveTools,
+    setActiveTools,
+  } as unknown as ExtensionAPI;
+  return { pi, registerProvider, setModel, on, handlers, events, registeredTools, toolNames, getActiveTools: () => [...activeTools] };
 }
 
 function fakeContext(overrides: Partial<FakeContext> = {}): FakeContext {
@@ -89,10 +111,21 @@ function pasteCallbacks(key: string): OAuthLoginCallbacks {
 describe("pi extension v2 wiring", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     _resetMcpState();
     // Deterministic baseline: no user-configured MCP servers (the real loader
     // would read the host's actual config files).
     _setAdapterConfigLoader(async () => ({ mcpServers: {} }));
+    // The hosted MCP server endpoint for first-class web tools (kata akyg):
+    // default to an empty tools/list so keyed session_start tests stay hermetic.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [] } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })),
+    );
   });
 
   test("registers the lunaroute provider with identity, auth, headers, refreshModels, and store-seeded models", () => {
@@ -263,6 +296,48 @@ describe("pi extension v2 wiring", () => {
     expect(adapter.requests).toHaveLength(0);
     const mcpHints = (ctx.ui.notify.mock.calls as string[][]).filter((c) => c[0] === MCP_INSTALL_HINT);
     expect(mcpHints).toHaveLength(0);
+  });
+
+  test("session_start registers a first-class web_search tool when the hosted MCP server offers one", async () => {
+    const { pi, handlers, events, registeredTools, getActiveTools } = fakePi();
+    installFakeAdapter(events);
+    lunarouteExtension(pi);
+    // Server offers web_search (and nothing else web-ish).
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { tools: [{ name: "web_search" }] },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        )),
+    );
+    const ctx = fakeContext({
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
+    });
+    await handlers.get("session_start")?.({}, ctx);
+    expect(registeredTools.map((t) => t.name)).toEqual(["web_search"]);
+    expect(getActiveTools()).toContain("web_search");
+    expect(getActiveTools()).toContain("read"); // existing actives preserved
+    expect(ctx.ui.notify).not.toHaveBeenCalled(); // silent, like MCP registration
+  });
+
+  test("session_start leaves web tools alone when they already exist locally", async () => {
+    const { pi, handlers, registeredTools } = fakePi({ toolNames: ["web_search", "fetch_content"] });
+    lunarouteExtension(pi);
+    const fetchMock = vi.fn(async () => {
+      throw new Error("must not be called when tools exist locally");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = fakeContext({
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
+    });
+    await handlers.get("session_start")?.({}, ctx);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(registeredTools).toHaveLength(0);
   });
 
   test("session_start is idempotent: a second start (no shutdown) is a no-op, not a duplicate", async () => {
