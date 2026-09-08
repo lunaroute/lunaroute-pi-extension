@@ -14,6 +14,8 @@ import { lunarouteOAuth } from "./login.js";
 import { createRefreshModels } from "./discovery.js";
 import { disposeLunarouteMcp, isAlreadyRegisteredError, isLunarouteMcpConfigured, maybeShowAdapterHint, maybeShowConfiguredNotice, registerLunarouteMcp } from "./mcp.js";
 import { registerWebTools } from "./web-tools.js";
+import { mcpEnabled, readSettings } from "./settings.js";
+import { registerLunarouteSettingsCommand } from "./settings-ui.js";
 
 export default function lunarouteExtension(pi: ExtensionAPI): void {
   const sessionId = generateSessionId();
@@ -21,6 +23,8 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
   // Tracks the session's current model so the post-login refresh can tell
   // whether the user already has a model (don't override) or has none yet.
   let currentModel: Model<Api> | undefined;
+
+  registerLunarouteSettingsCommand(pi, mcpDeps);
 
   pi.registerProvider(LUNAROUTE_PROVIDER, {
     name: "LunaRoute",
@@ -37,19 +41,25 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
       async login(callbacks) {
         const creds = await lunarouteOAuth.login(callbacks);
         await disposeLunarouteMcp();
-        // A user-configured LunaRoute MCP wins: skip registration (the
-        // adapter would reject ours by name anyway).
-        if (await isLunarouteMcpConfigured(process.env)) {
+        // User settings gate both surfaces (kata bjy9); read fresh — the
+        // file may have changed since the factory ran.
+        const settings = readSettings(process.env);
+        if (!mcpEnabled(settings)) {
+          // User turned MCP off (kata bjy9): skip re-registration but still
+          // set up web tools below.
+        } else if (await isLunarouteMcpConfigured(process.env)) {
+          // A user-configured LunaRoute MCP wins: skip registration (the
+          // adapter would reject ours by name anyway).
           maybeShowConfiguredNotice({ notify: (m) => callbacks.onProgress?.(m) });
-          return creds;
+        } else {
+          const { registered, error } = registerLunarouteMcp(pi, creds.access, mcpDeps);
+          if (error) console.warn(`LunaRoute MCP re-register failed: ${error.message}`);
+          else if (!registered) maybeShowAdapterHint({ notify: (m) => callbacks.onProgress?.(m) });
         }
-        const { registered, error } = registerLunarouteMcp(pi, creds.access, mcpDeps);
-        if (error) console.warn(`LunaRoute MCP re-register failed: ${error.message}`);
-        else if (!registered) maybeShowAdapterHint({ notify: (m) => callbacks.onProgress?.(m) });
         // First-class web tools too (kata akyg): a fresh login means the
         // session_start path may have skipped registration (no key then).
         // Fire-and-forget — registerWebTools never throws.
-        void registerWebTools(pi, { key: creds.access, ...mcpDeps }).catch(() => {});
+        void registerWebTools(pi, { key: creds.access, ...mcpDeps, settings }).catch(() => {});
         return creds;
       },
     },
@@ -74,6 +84,7 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     currentModel = ctx.model;
+    const settings = readSettings(process.env);
     const key = await ctx.modelRegistry.getApiKeyForProvider(LUNAROUTE_PROVIDER);
     // Hint derives from the key lookup (works on hosts without
     // getProviderAuthStatus, e.g. oh-my-pi): a resolvable key — stored OAuth
@@ -82,25 +93,28 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
       ctx.ui.notify(firstRunHint(), "info");
     }
     if (!key) return; // not logged in — silent, no MCP registration
-    // A user-configured LunaRoute MCP server wins (the adapter keeps the
-    // configured server and rejects ours by name): defer to it.
-    if (await isLunarouteMcpConfigured(process.env)) {
-      if (ctx.hasUI) maybeShowConfiguredNotice(ctx.ui);
-      return;
-    }
-    const { registered, error } = registerLunarouteMcp(pi, key, mcpDeps);
-    if (error && isAlreadyRegisteredError(error) && ctx.hasUI) {
-      // Raced: the config appeared (or a custom --mcp-config was used) after
-      // our check. Same defer outcome, same one-time notice.
-      maybeShowConfiguredNotice(ctx.ui);
-    } else if (error && ctx.hasUI) {
-      ctx.ui.notify(`LunaRoute MCP registration failed: ${error.message}`, "warning");
-    } else if (!registered && ctx.hasUI) {
-      maybeShowAdapterHint(ctx.ui);
+    // User turned MCP off (kata bjy9): silent skip, defer notice included.
+    if (mcpEnabled(settings)) {
+      // A user-configured LunaRoute MCP server wins (the adapter keeps the
+      // configured server and rejects ours by name): defer to it.
+      if (await isLunarouteMcpConfigured(process.env)) {
+        if (ctx.hasUI) maybeShowConfiguredNotice(ctx.ui);
+      } else {
+        const { registered, error } = registerLunarouteMcp(pi, key, mcpDeps);
+        if (error && isAlreadyRegisteredError(error) && ctx.hasUI) {
+          // Raced: the config appeared (or a custom --mcp-config was used) after
+          // our check. Same defer outcome, same one-time notice.
+          maybeShowConfiguredNotice(ctx.ui);
+        } else if (error && ctx.hasUI) {
+          ctx.ui.notify(`LunaRoute MCP registration failed: ${error.message}`, "warning");
+        } else if (!registered && ctx.hasUI) {
+          maybeShowAdapterHint(ctx.ui);
+        }
+      }
     }
     // First-class web_search/web_fetch (kata akyg): register only what is
     // missing locally and offered by the hosted MCP server. Never throws.
-    await registerWebTools(pi, { key, ...mcpDeps });
+    await registerWebTools(pi, { key, ...mcpDeps, settings });
   });
 
   pi.on("model_select", (event) => {

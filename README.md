@@ -129,6 +129,28 @@ If both this extension and another web-search extension are active, pi's
 first-wins rule decides who owns the plain `web_search` name; use
 `--exclude-tools` if you need to pick manually.
 
+## Settings
+
+Run `/lunaroute` in Pi to open the settings UI (interactive mode):
+
+- **MCP tools** — on/off. Off skips the hosted LunaRoute MCP registration
+  (a server you configured yourself is always left alone).
+- **Web search tools** — on/off. Off removes `web_search` / `web_fetch`
+  immediately; on restores them without a restart.
+- **Search provider** — server / brave / exa / kagi. The default provider
+  used for every `web_search`; the model can still override it per call.
+
+Settings persist in `~/.pi/agent/lunaroute.json`:
+
+```json
+{ "mcp": "on", "webTools": "on", "searchProvider": "server" }
+```
+
+Missing keys fall back to these defaults (which equal the pre-settings
+behavior), and invalid values are ignored per key. Outside interactive mode,
+edit the file directly. The `LUNAROUTE_WEB_TOOLS` environment variable (see
+below) still wins over the file.
+
 ## Configuration
 
 The gateway, API, and front URLs default to production and are overridable

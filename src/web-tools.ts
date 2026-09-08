@@ -14,6 +14,13 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type TSchema } from "typebox";
 import { buildAttributionHeaders, resolveMcpUrl } from "./lunaroute.js";
+import {
+	DEFAULT_SETTINGS,
+	resolveSearchProvider,
+	webToolsEnabled,
+	type ConcreteSearchProvider,
+	type LunarouteSettings,
+} from "./settings.js";
 
 // First-class web tools (kata akyg). The hosted LunaRoute MCP server exposes
 // a normalized web_search tool; this module surfaces it as a real Pi tool —
@@ -348,6 +355,9 @@ export interface WebToolBuildDeps {
 	client: LunarouteMcpClient;
 	/** Server-side MCP tool name (resolved from tools/list, not assumed). */
 	mcpToolName: string;
+	/** Default search provider from user settings (kata bjy9); the per-call
+	 * param still wins. Undefined = server default (key omitted on the wire). */
+	defaultProvider?: ConcreteSearchProvider;
 }
 
 const webSearchSchema = Type.Object({
@@ -374,9 +384,11 @@ export function buildWebSearchTool(deps: WebToolBuildDeps): ToolDefinition<typeo
 		parameters: webSearchSchema,
 		async execute(_toolCallId, params, signal, onUpdate) {
 			onUpdate?.({ content: [{ type: "text", text: "Searching the web via LunaRoute…" }], details: {} });
+			// Per-call provider param wins; the user setting is only the default.
+			const provider = params.provider ?? deps.defaultProvider;
 			const call = await deps.client.callTool(
 				deps.mcpToolName,
-				{ query: params.query, count: params.count, provider: params.provider },
+				{ query: params.query, count: params.count, ...(provider !== undefined && { provider }) },
 				signal,
 			);
 			const payload = parseWebSearchPayload(call.content?.[0]?.text ?? "");
@@ -514,7 +526,6 @@ export function buildWebFetchTool(deps: WebToolBuildDeps): ToolDefinition<typeof
 // Registration orchestrator
 // ============================================================================
 
-export const LUNAROUTE_ENV_WEB_TOOLS = "LUNAROUTE_WEB_TOOLS";
 export const LUNAROUTE_ENV_MCP_WEB_SEARCH_TOOL = "LUNAROUTE_MCP_WEB_SEARCH_TOOL";
 export const LUNAROUTE_ENV_MCP_WEB_FETCH_TOOL = "LUNAROUTE_MCP_WEB_FETCH_TOOL";
 
@@ -533,11 +544,8 @@ export interface RegisterWebToolsDeps {
 	version: string;
 	sessionId: string;
 	fetchImpl?: FetchLike;
-}
-
-function webToolsDisabled(env: NodeJS.ProcessEnv): boolean {
-	const v = env[LUNAROUTE_ENV_WEB_TOOLS];
-	return v === "off" || v === "0" || v === "false";
+	/** Persisted user settings (kata bjy9); absent → defaults = current behavior. */
+	settings?: LunarouteSettings;
 }
 
 /** Pick the server-side MCP tool backing a Pi web tool: an explicit env
@@ -551,6 +559,22 @@ function pickServerTool(
 	return serverTools.find((n) => matchesAnyPattern(n, patterns));
 }
 
+// Tools this process registered (kata bjy9): the settings UI's live-apply
+// touches only these names — never another extension's same-named tool
+// (cross-extension names are first-registration-wins, indistinguishable by
+// name alone once both exist).
+const registeredWebToolNames = new Set<string>();
+
+/** Names of the web tools this process registered (for settings live-apply). */
+export function getRegisteredWebToolNames(): ReadonlySet<string> {
+	return registeredWebToolNames;
+}
+
+/** Test-only: reset module-scoped state. */
+export function _resetWebToolsState(): void {
+	registeredWebToolNames.clear();
+}
+
 /** Register first-class web tools when they are both missing locally and
  * offered by the hosted LunaRoute MCP server. Never throws — web tools are
  * optional, exactly like the MCP registration. */
@@ -558,8 +582,8 @@ export async function registerWebTools(
 	pi: ExtensionAPI,
 	deps: RegisterWebToolsDeps,
 ): Promise<WebToolsRegistration> {
-	const disabled = webToolsDisabled(deps.env);
-	if (disabled) {
+	const settings = deps.settings ?? DEFAULT_SETTINGS;
+	if (!webToolsEnabled(deps.env, settings)) {
 		return { webSearch: "skipped-disabled", webFetch: "skipped-disabled" };
 	}
 
@@ -614,6 +638,7 @@ export async function registerWebTools(
 		tool: ToolDefinition<TParams, TDetails, TState>,
 	): void => {
 		pi.registerTool(tool);
+		registeredWebToolNames.add(tool.name);
 		// Tools registered after startup are refreshed immediately, but the
 		// active set does not change on its own — merge ours in explicitly.
 		const active = pi.getActiveTools();
@@ -623,7 +648,14 @@ export async function registerWebTools(
 	};
 
 	try {
-		if (needSearch && searchTool) register(buildWebSearchTool({ client, mcpToolName: searchTool }));
+		if (needSearch && searchTool)
+			register(
+				buildWebSearchTool({
+					client,
+					mcpToolName: searchTool,
+					defaultProvider: resolveSearchProvider(settings),
+				}),
+			);
 		if (needFetch && fetchTool) register(buildWebFetchTool({ client, mcpToolName: fetchTool }));
 	} catch (err) {
 		return {

@@ -16,6 +16,8 @@ export const LUNAROUTE_ENV_ROUTING_URL = "LUNAROUTE_ROUTING_URL";
 export const LUNAROUTE_ENV_API_URL = "LUNAROUTE_API_URL";
 export const LUNAROUTE_ENV_FRONT_URL = "LUNAROUTE_FRONT_URL";
 export const LUNAROUTE_ENV_MCP_URL = "LUNAROUTE_MCP_URL";
+// Lives here (not web-tools.ts) so settings.ts can import it without a cycle.
+export const LUNAROUTE_ENV_WEB_TOOLS = "LUNAROUTE_WEB_TOOLS";
 
 // Production defaults — confirm against the deployed LunaRoute environment before release.
 export const DEFAULT_ROUTING_URL = "https://gw.lunaroute.com/v1";
@@ -180,7 +182,7 @@ export function toStoredModel(model: ProviderModelConfig, baseUrl: string): Mode
   };
 }
 
-function agentDirFromEnv(env: NodeJS.ProcessEnv): string {
+export function agentDirFromEnv(env: NodeJS.ProcessEnv): string {
   const value = env[LUNAROUTE_ENV_AGENT_DIR];
   return typeof value === "string" && value ? value : join(homedir(), ".pi", "agent");
 }
