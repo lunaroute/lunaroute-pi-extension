@@ -367,6 +367,28 @@ describe("buildWebSearchTool", () => {
 		expect(details.results).toHaveLength(2);
 	});
 
+	test("execute injects the default provider when the model omitted it (kata bjy9)", async () => {
+		const capture: { name?: string; args?: Record<string, unknown> } = {};
+		const tool = buildWebSearchTool({ client: fakeClient(PAYLOAD_TEXT, capture), mcpToolName: "web_search", defaultProvider: "kagi" });
+		await tool.execute("tc_dp", { query: "x" }, undefined, undefined, {} as never);
+		expect(capture.args).toEqual({ query: "x", provider: "kagi" });
+	});
+
+	test("per-call provider beats the default provider (kata bjy9)", async () => {
+		const capture: { name?: string; args?: Record<string, unknown> } = {};
+		const tool = buildWebSearchTool({ client: fakeClient(PAYLOAD_TEXT, capture), mcpToolName: "web_search", defaultProvider: "kagi" });
+		await tool.execute("tc_ov", { query: "x", provider: "brave" }, undefined, undefined, {} as never);
+		expect(capture.args).toEqual({ query: "x", provider: "brave" });
+	});
+
+	test("no default provider and no per-call provider omits the key entirely", async () => {
+		const capture: { name?: string; args?: Record<string, unknown> } = {};
+		const tool = buildWebSearchTool({ client: fakeClient(PAYLOAD_TEXT, capture), mcpToolName: "web_search" });
+		await tool.execute("tc_no", { query: "x" }, undefined, undefined, {} as never);
+		expect(capture.args).toEqual({ query: "x" });
+		expect("provider" in (capture.args ?? {})).toBe(false);
+	});
+
 	test("execute with no results returns an explicit empty message", async () => {
 		const tool = buildWebSearchTool({
 			client: fakeClient(JSON.stringify({ query: "x", provider: "brave", results: [] })),
@@ -518,6 +540,65 @@ describe("registerWebTools", () => {
 		expect(result).toEqual({ webSearch: "skipped-disabled", webFetch: "skipped-disabled" });
 		expect(fetchImpl).not.toHaveBeenCalled();
 		expect(registered).toHaveLength(0);
+	});
+
+	test("does nothing when disabled via settings webTools=off (kata bjy9)", async () => {
+		const { pi, registered } = fakePi();
+		const fetchImpl = vi.fn();
+		const result = await registerWebTools(pi, {
+			...REG_DEPS,
+			settings: { mcp: "on", webTools: "off", searchProvider: "server" },
+			fetchImpl: fetchImpl as unknown as FetchLike,
+		});
+		expect(result).toEqual({ webSearch: "skipped-disabled", webFetch: "skipped-disabled" });
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(registered).toHaveLength(0);
+	});
+
+	test("env off wins over settings webTools=on (kata bjy9)", async () => {
+		const { pi, registered } = fakePi();
+		const fetchImpl = vi.fn();
+		const result = await registerWebTools(pi, {
+			...REG_DEPS,
+			env: { LUNAROUTE_WEB_TOOLS: "off" },
+			settings: { mcp: "on", webTools: "on", searchProvider: "server" },
+			fetchImpl: fetchImpl as unknown as FetchLike,
+		});
+		expect(result.webSearch).toBe("skipped-disabled");
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(registered).toHaveLength(0);
+	});
+
+	test("registered web_search carries the default provider from settings (kata bjy9)", async () => {
+		const { pi, registered } = fakePi();
+		const log: { method: string; params?: unknown }[] = [];
+		const fetchImpl = mcpFetch(
+			{
+				initialize: () => ({}),
+				"notifications/initialized": () => undefined,
+				"tools/list": () => TOOLS_LIST_WITH_SEARCH,
+				"tools/call": () => ({
+					content: [{ type: "text", text: JSON.stringify({ query: "x", provider: "kagi", results: [] }) }],
+				}),
+			},
+			log,
+		);
+		const result = await registerWebTools(pi, {
+			...REG_DEPS,
+			settings: { mcp: "on", webTools: "on", searchProvider: "kagi" },
+			fetchImpl,
+		});
+		expect(result.webSearch).toBe("registered");
+		const search = registered.find((t) => t.name === "web_search") as
+			| { execute: (id: string, p: Record<string, unknown>, s?: undefined, u?: undefined, c?: undefined) => Promise<unknown> }
+			| undefined;
+		expect(search).toBeTruthy();
+		await search!.execute("tc_1", { query: "x" }, undefined, undefined, undefined);
+		const call = log.find((e) => e.method === "tools/call");
+		expect((call?.params as { name: string; arguments: Record<string, unknown> }).arguments).toEqual({
+			query: "x",
+			provider: "kagi",
+		});
 	});
 
 	test("skips without any network call when both tools already exist locally", async () => {

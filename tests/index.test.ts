@@ -68,6 +68,7 @@ function fakePi(options: { toolNames?: string[] } = {}) {
     registeredTools.push(tool);
     toolNames.push(tool.name);
   });
+  const registerCommand = vi.fn();
   const getAllTools = vi.fn(() => toolNames.map((name) => ({ name })));
   const getActiveTools = vi.fn(() => [...activeTools]);
   const setActiveTools = vi.fn((names: string[]) => {
@@ -79,11 +80,12 @@ function fakePi(options: { toolNames?: string[] } = {}) {
     events,
     setModel,
     registerTool,
+    registerCommand,
     getAllTools,
     getActiveTools,
     setActiveTools,
   } as unknown as ExtensionAPI;
-  return { pi, registerProvider, setModel, on, handlers, events, registeredTools, toolNames, getActiveTools: () => [...activeTools] };
+  return { pi, registerProvider, setModel, on, handlers, events, registeredTools, toolNames, registerCommand, getActiveTools: () => [...activeTools] };
 }
 
 function fakeContext(overrides: Partial<FakeContext> = {}): FakeContext {
@@ -109,10 +111,15 @@ function pasteCallbacks(key: string): OAuthLoginCallbacks {
 }
 
 describe("pi extension v2 wiring", () => {
+  let agentDir: string;
   beforeEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     _resetMcpState();
+    // Hermetic agent dir (kata bjy9): readSettings in session_start must
+    // never see the developer's real ~/.pi/agent/lunaroute.json.
+    agentDir = mkdtempSync(join(tmpdir(), "lr-agent-"));
+    vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
     // Deterministic baseline: no user-configured MCP servers (the real loader
     // would read the host's actual config files).
     _setAdapterConfigLoader(async () => ({ mcpServers: {} }));
@@ -338,6 +345,72 @@ describe("pi extension v2 wiring", () => {
     await handlers.get("session_start")?.({}, ctx);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(registeredTools).toHaveLength(0);
+  });
+
+  // ========================================================================
+  // Settings (kata bjy9): /lunaroute TUI, file-backed, threaded everywhere.
+  // ========================================================================
+
+  test("registers the /lunaroute settings command", () => {
+    const { pi, registerCommand } = fakePi();
+    lunarouteExtension(pi);
+    expect(registerCommand).toHaveBeenCalledWith(
+      "lunaroute",
+      expect.objectContaining({ description: expect.stringContaining("settings") }),
+    );
+  });
+
+  test("session_start skips MCP registration when settings disable it — web tools unaffected", async () => {
+    writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ mcp: "off" }));
+    const { pi, handlers, events, registeredTools } = fakePi();
+    const adapter = installFakeAdapter(events);
+    lunarouteExtension(pi);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "web_search" }] } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        )),
+    );
+    const ctx = fakeContext({
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
+    });
+    await handlers.get("session_start")?.({}, ctx);
+    expect(adapter.requests).toHaveLength(0);
+    expect(ctx.ui.notify).not.toHaveBeenCalled(); // silent skip, no defer notice
+    expect(registeredTools.map((t) => t.name)).toEqual(["web_search"]); // webTools default on
+  });
+
+  test("session_start skips web tools when settings disable them — MCP unaffected", async () => {
+    writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ webTools: "off" }));
+    const { pi, handlers, events, registeredTools } = fakePi();
+    const adapter = installFakeAdapter(events);
+    lunarouteExtension(pi);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("must not be called when web tools are disabled");
+      }),
+    );
+    const ctx = fakeContext({
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
+    });
+    await handlers.get("session_start")?.({}, ctx);
+    expect(registeredTools).toHaveLength(0);
+    expect(adapter.requests).toHaveLength(1); // mcp default on
+  });
+
+  test("login skips MCP registration when settings disable it", async () => {
+    writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ mcp: "off" }));
+    const { pi, events, registerProvider } = fakePi();
+    const adapter = installFakeAdapter(events);
+    lunarouteExtension(pi);
+    const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
+    const oauth = config.oauth as { login(c: OAuthLoginCallbacks): Promise<unknown> };
+    const creds = await oauth.login(pasteCallbacks("lr_new"));
+    expect((creds as { access: string }).access).toBe("lr_new");
+    expect(adapter.requests).toHaveLength(0); // gated off — no re-registration
   });
 
   test("session_start is idempotent: a second start (no shutdown) is a no-op, not a duplicate", async () => {
