@@ -26,7 +26,7 @@ jobs:
       - name: Assert npm pack file list
         run: |
           set -euo pipefail
-          # The packed file list must be exactly these 8 files — no test files,
+          # The packed file list must be exactly these 9 files — no test files,
           # no missing source files. Catches a `files`-allowlist regression or
           # a dropped/added source file.
           expected='LICENSE
@@ -36,7 +36,8 @@ jobs:
           src/index.ts
           src/login.ts
           src/lunaroute.ts
-          src/mcp.ts'
+          src/mcp.ts
+          src/web-tools.ts'
 
           # `npm pack --dry-run` prints `npm notice <size> <path>`; the path is
           # the last field. Filter to the file paths we care about (skip the
