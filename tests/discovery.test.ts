@@ -148,6 +148,39 @@ describe("lunaroute refreshModels", () => {
     expect(arg.persist.models.map((m) => m.id)).toEqual(["chat-1", "glm-5.2-vision"]);
   });
 
+  test("excludes embedding and reranking models from the chat catalog, the persisted store, and onCatalogRefreshed (kata p4eh)", async () => {
+    const onCatalogRefreshed = vi.fn();
+    const publish = vi.fn(async (_publication: unknown) => true);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        modelsResponse([
+          { id: "chat-1", display_name: "Chat 1", context_window: 8192, max_output_tokens: 1024, capabilities: { tools: true } },
+          { id: "emb-qwen3", capabilities: { embeddings: true, rerank: false } },
+          { id: "bge-rr-v2-m3", capabilities: { embeddings: false, rerank: true } },
+          {
+            id: "glm-5.2-vision",
+            context_window: 1048576,
+            max_output_tokens: 16384,
+            capabilities: { reasoning: true, vision: true, tools: true },
+            client_compat: { pi: { thinkingLevelMap: { off: null, high: "high" } } },
+          },
+        ]),
+      ),
+    );
+    const models = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" }, { onCatalogRefreshed })(
+      fakeContext({ publish }),
+    );
+    expect(models.map((m) => m.id)).toEqual(["chat-1", "glm-5.2-vision"]);
+    // Auto-select safety: models[0] must never be an embedding or reranking model.
+    expect((onCatalogRefreshed.mock.calls[0][0] as { id: string }[]).map((m) => m.id)).toEqual([
+      "chat-1",
+      "glm-5.2-vision",
+    ]);
+    const arg = publish.mock.calls[0][0] as { persist: { models: Model<Api>[]; checkedAt: number } };
+    expect(arg.persist.models.map((m) => m.id)).toEqual(["chat-1", "glm-5.2-vision"]);
+  });
+
   test("uses an injected fetch when provided (no global fetch needed)", async () => {
     const injected = vi.fn(async () => modelsResponse([{ id: "x" }]));
     const models = await createRefreshModels({}, { fetch: injected })(fakeContext());

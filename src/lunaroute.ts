@@ -125,9 +125,11 @@ export type CatalogMappingResult =
  * completions. Pi's chat Model schema has nowhere to represent such models —
  * `input: ["image"]` means image *input* (vision), not generation — so mapping
  * them would leak them into the chat list indistinguishable from text models
- * and force downstream name heuristics (kata gx0e). When the gateway starts
- * tagging other non-chat families (e.g. embeddings), add the tag here. */
-export const NON_CHAT_CAPABILITIES: readonly string[] = ["image_generation"];
+ * and force downstream name heuristics (kata gx0e). The gateway now tags all
+ * non-chat families explicitly — image_generation, embeddings (emb-*), rerank
+ * (bge-rr-v2-m3) — so each is a one-line entry here (kata p4eh). When the
+ * gateway grows another non-chat family, add its tag here. */
+export const NON_CHAT_CAPABILITIES: readonly string[] = ["image_generation", "embeddings", "rerank"];
 
 function normalizeGatewayPiBlock(pi: GatewayPiBlock): {
   thinkingLevelMap?: ThinkingLevelMap;

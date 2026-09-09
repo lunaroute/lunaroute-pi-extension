@@ -189,6 +189,43 @@ describe("lunaroute v2 helpers", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("mapCatalogEntry skips embedding and reranking models with typed reasons (kata p4eh)", () => {
+    // Live gateway shapes: emb-* carry embeddings:true/rerank:false; bge-rr-v2-m3 carries the inverse.
+    const embeddings = mapCatalogEntry({ id: "emb-qwen3", capabilities: { embeddings: true, rerank: false } });
+    expect(embeddings).toEqual({ ok: false, reason: "non_chat_capability", id: "emb-qwen3", capability: "embeddings" });
+
+    const rerank = mapCatalogEntry({ id: "bge-rr-v2-m3", capabilities: { embeddings: false, rerank: true } });
+    expect(rerank).toEqual({ ok: false, reason: "non_chat_capability", id: "bge-rr-v2-m3", capability: "rerank" });
+  });
+
+  test("mapCatalogEntry maps normally when embeddings/rerank are absent or explicitly false", () => {
+    const capabilitySets: (Record<string, boolean> | undefined)[] = [
+      undefined,
+      {},
+      { embeddings: false, rerank: false },
+    ];
+    for (const capabilities of capabilitySets) {
+      const result = mapCatalogEntry({ id: "chat-1", capabilities });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.model.id).toBe("chat-1");
+      expect(result.model.input).toEqual(["text"]);
+    }
+  });
+
+  test("mapCatalogEntry rejects embeddings/rerank before the reasoning/pi-block check", () => {
+    for (const capability of ["embeddings", "rerank"] as const) {
+      const result = mapCatalogEntry({
+        id: `non-chat-${capability}`,
+        capabilities: { [capability]: true, reasoning: true },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toBe("non_chat_capability");
+      expect(result.reason).not.toBe("reasoning_missing_pi_block");
+    }
+  });
+
   test("mapCatalogEntry maps a reasoning model with the pi block (thinkingLevelMap + compat)", () => {
     const result = mapCatalogEntry({
       id: "glm-5.2",
