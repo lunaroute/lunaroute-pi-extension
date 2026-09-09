@@ -455,3 +455,65 @@ describe("registerImageTools idempotency (roborev job 1636)", () => {
 		expect(registered.map((t) => t.name).sort()).toEqual(["edit_image", "upload_image"]);
 	});
 });
+
+describe("registerImageTools credential/schema freshness (roborev job 1640)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetImageToolsState();
+	});
+
+	test("re-login with a rotated key: already-registered tools use the new client", async () => {
+		const { pi, registered } = fakePi();
+		const oldFetch = mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []);
+		const first = await registerImageTools(pi, { key: "lr_old", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: oldFetch });
+		expect(first.generateImage).toBe("registered");
+		const generate = registered.find((t) => t.name === "generate_image");
+		expect(generate).toBeDefined();
+
+		// A logged-out gap or re-login builds a NEW client with a NEW key.
+		const newFetch = mcpFetch(
+			{
+				"tools/list": () => IMAGE_TOOLS_LIST,
+				"tools/call": () => ({
+					content: [
+						{ type: "text", text: GENERATED_TEXT },
+						{ type: "image", data: Buffer.from("rotatedbytes").toString("base64"), mimeType: "image/png" },
+					],
+					isError: false,
+				}),
+			},
+			[],
+		);
+		const second = await registerImageTools(pi, { key: "lr_rotated", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: newFetch });
+		expect(second.generateImage).toBe("registered");
+
+		// The tool instance captured at FIRST registration must now talk
+		// through the rotated client — same tool object, fresh credentials.
+		const result = await generate!.execute("t1", { prompt: "p", model: "flux-2-klein" } as never, AC(), undefined, {} as never);
+		expect((result.content[0] as { text?: string }).text).toContain("saved to:");
+	});
+
+	test("a changed server model enum re-registers the tool with the fresh schema", async () => {
+		const { pi, registered } = fakePi();
+		await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []) });
+		expect(pi.registerTool).toHaveBeenCalledTimes(3);
+		const withNewModel = {
+			tools: IMAGE_TOOLS_LIST.tools.map((t) =>
+				t.name === "generate_image"
+					? { ...t, inputSchema: { type: "object", properties: { model: { type: "string", enum: ["flux-2-klein", "flux-2-dev"], description: "both" } } } }
+					: t,
+			),
+		};
+		await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({ "tools/list": () => withNewModel }, []) });
+		// generate_image was replaced (4 total registrations); the new schema
+		// carries the refreshed enum.
+		expect(pi.registerTool).toHaveBeenCalledTimes(4);
+		const refreshed = registered.filter((t) => t.name === "generate_image");
+		expect(refreshed).toHaveLength(2);
+		const model = (refreshed[1]?.parameters as unknown as { properties: { model: { anyOf?: { const: string }[] } } }).properties.model;
+		expect(model.anyOf).toEqual([
+			{ type: "string", const: "flux-2-klein" },
+			{ type: "string", const: "flux-2-dev" },
+		]);
+	});
+});

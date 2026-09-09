@@ -520,6 +520,14 @@ export function extractModelEnum(inputSchema: unknown): { enum: string[]; descri
 // Tools this process registered: the settings UI's live-apply touches only
 // these names (same rule as the web tools, kata bjy9).
 const registeredImageToolNames = new Set<string>();
+// The model enum each registered tool was built with, so a changed server
+// catalog re-registers the tool (fresh schema) instead of serving a stale one.
+const registeredModelEnums = new Map<string, { enum: string[]; description?: string } | undefined>();
+// The one client every registered image tool talks through;
+// registerImageTools swaps it on re-entry, so a rotated key (re-login)
+// reaches already-registered tools without touching their registrations
+// (roborev job 1640).
+const currentClient: { client?: LunarouteMcpClient } = {};
 
 /** Names of the image tools this process registered (settings live-apply). */
 export function getRegisteredImageToolNames(): ReadonlySet<string> {
@@ -529,6 +537,28 @@ export function getRegisteredImageToolNames(): ReadonlySet<string> {
 /** Test-only: reset module-scoped state. */
 export function _resetImageToolsState(): void {
 	registeredImageToolNames.clear();
+	registeredModelEnums.clear();
+	currentClient.client = undefined;
+}
+
+/** A stable facade delegating to the current client — captured by tool
+ * closures at registration time, while the credentials behind it rotate. */
+function delegatingClient(ref: { client?: LunarouteMcpClient }): LunarouteMcpClient {
+	const notConnected = () => Promise.reject(new Error("LunaRoute image tools: not connected"));
+	return {
+		callTool: (name, args, signal) => ref.client?.callTool(name, args, signal) ?? notConnected(),
+		listTools: (signal) => ref.client?.listTools(signal) ?? notConnected(),
+		listToolDescriptors: (signal) => ref.client?.listToolDescriptors?.(signal) ?? notConnected(),
+	};
+}
+
+function modelEnumEquals(
+	a: { enum: string[]; description?: string } | undefined,
+	b: { enum: string[]; description?: string } | undefined,
+): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	return a.description === b.description && a.enum.length === b.enum.length && a.enum.every((v, i) => v === b.enum[i]);
 }
 
 /** Register first-class image tools when the hosted LunaRoute MCP server
@@ -573,6 +603,11 @@ export async function registerImageTools(
 	const editDescriptor = byName.get("edit_image");
 	const uploadDescriptor = byName.get("upload_image");
 
+	// Every registered tool talks through this shared, swappable client (a
+	// rotated key on re-login reaches them without re-registration).
+	currentClient.client = client;
+	const stableClient = delegatingClient(currentClient);
+
 	const registration: ImageToolsRegistration = {
 		generateImage: "skipped-server",
 		editImage: "skipped-server",
@@ -581,10 +616,12 @@ export async function registerImageTools(
 
 	// Idempotent per-tool registration (roborev job 1636): session_start
 	// re-fires on resume/fork/reload, so an already-registered name is
-	// re-activated, never re-registered (pi replaces same-extension tools on
-	// re-register and other hosts may reject duplicates outright); each tool
-	// registers independently, and one failure neither blocks the others nor
-	// inflates the reported outcome.
+	// re-activated, never pointlessly re-registered — EXCEPT when the
+	// server's model enum changed, which re-registers the tool so its schema
+	// carries the fresh catalog (roborev job 1640; same-extension
+	// re-registration replaces on mainline pi). Each tool registers
+	// independently, and one failure neither blocks the others nor inflates
+	// the reported outcome.
 	const ensureActive = (name: string): void => {
 		// Tools registered after startup are refreshed immediately, but the
 		// active set does not change on its own — merge ours in explicitly.
@@ -593,36 +630,43 @@ export async function registerImageTools(
 			pi.setActiveTools([...new Set([...active, name])]);
 		}
 	};
-	const offerings: [keyof Pick<ImageToolsRegistration, "generateImage" | "editImage" | "uploadImage">, string, () => unknown][] = [
-		["generateImage", "generate_image", () =>
+	const offerings: [
+		keyof Pick<ImageToolsRegistration, "generateImage" | "editImage" | "uploadImage">,
+		string,
+		(enumInfo: { enum: string[]; description?: string } | undefined) => unknown,
+	][] = [
+		["generateImage", "generate_image", (enumInfo) =>
 			buildGenerateImageTool({
-				client,
+				client: stableClient,
 				mcpToolName: "generate_image",
 				env: deps.env,
 				fetchImpl: deps.fetchImpl,
-				modelEnum: extractModelEnum(generateDescriptor?.inputSchema),
+				modelEnum: enumInfo,
 			})],
-		["editImage", "edit_image", () =>
+		["editImage", "edit_image", (enumInfo) =>
 			buildEditImageTool({
-				client,
+				client: stableClient,
 				mcpToolName: "edit_image",
 				env: deps.env,
 				fetchImpl: deps.fetchImpl,
-				modelEnum: extractModelEnum(editDescriptor?.inputSchema),
+				modelEnum: enumInfo,
 			})],
 		["uploadImage", "upload_image", () =>
-			buildUploadImageTool({ client, mcpToolName: "upload_image", env: deps.env, fetchImpl: deps.fetchImpl })],
+			buildUploadImageTool({ client: stableClient, mcpToolName: "upload_image", env: deps.env, fetchImpl: deps.fetchImpl })],
 	];
 	for (const [key, name, build] of offerings) {
 		if (!byName.has(name)) continue;
-		if (registeredImageToolNames.has(name)) {
+		const enumInfo = extractModelEnum(byName.get(name)?.inputSchema);
+		const ours = registeredImageToolNames.has(name);
+		if (ours && modelEnumEquals(registeredModelEnums.get(name), enumInfo)) {
 			ensureActive(name);
 			registration[key] = "registered";
 			continue;
 		}
 		try {
-			pi.registerTool(build() as never);
+			pi.registerTool(build(enumInfo) as never);
 			registeredImageToolNames.add(name);
+			registeredModelEnums.set(name, enumInfo);
 			ensureActive(name);
 			registration[key] = "registered";
 		} catch (err) {
