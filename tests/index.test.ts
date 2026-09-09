@@ -584,13 +584,110 @@ describe("model persistence and auto-select", () => {
     expect(setModel).not.toHaveBeenCalled();
   });
 
-  test("does not auto-select when the catalog fetch fails", async () => {
+  test("does not auto-select when the catalog fetch fails and no catalog is persisted", async () => {
     const { pi, registerProvider, setModel } = fakePi();
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
     lunarouteExtension(pi);
     await refreshModelsOf(registerProvider)(fakeRefreshContext());
     expect(setModel).not.toHaveBeenCalled();
+  });
+
+  test("auto-picks the first persisted model when the fetch fails but a catalog is stored", async () => {
+    const { pi, registerProvider, setModel, handlers } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    lunarouteExtension(pi);
+    fireModelSelect(handlers, { id: "unknown", name: "unknown", api: "unknown", provider: "unknown", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 0, maxTokens: 0 });
+    const stored: Model<Api> = {
+      id: "cached-1",
+      name: "Cached 1",
+      api: "openai-completions",
+      provider: "lunaroute",
+      baseUrl: "http://gw/v1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+      maxTokens: 1024,
+    };
+    await refreshModelsOf(registerProvider)(fakeRefreshContext({ stored: { models: [stored], checkedAt: 1 } }));
+    expect(setModel).toHaveBeenCalledTimes(1);
+    expect(setModel.mock.calls[0][0]).toMatchObject({
+      id: "cached-1",
+      provider: LUNAROUTE_PROVIDER,
+      api: "openai-completions",
+      baseUrl: "http://gw/v1",
+    });
+  });
+
+  test("notifies the user after auto-picking the default model", async () => {
+    const { pi, registerProvider, setModel, handlers } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM" }])));
+    lunarouteExtension(pi);
+    const ctx = fakeContext({ modelRegistry: { getApiKeyForProvider: () => Promise.resolve(undefined) } });
+    await handlers.get("session_start")?.({}, ctx);
+    await refreshModelsOf(registerProvider)(fakeRefreshContext());
+    expect(setModel).toHaveBeenCalledTimes(1);
+    // The setModel result chain settles in microtasks after the refresh.
+    await vi.waitFor(() =>
+      expect(ctx.ui.notify).toHaveBeenCalledWith("LunaRoute: set GLM as default model (change with /model)", "info"),
+    );
+  });
+
+  test("does not notify when setModel reports the provider is not authenticated", async () => {
+    const { pi, registerProvider, setModel, handlers } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM" }])));
+    setModel.mockResolvedValue(false);
+    lunarouteExtension(pi);
+    const ctx = fakeContext({ modelRegistry: { getApiKeyForProvider: () => Promise.resolve(undefined) } });
+    await handlers.get("session_start")?.({}, ctx);
+    await refreshModelsOf(registerProvider)(fakeRefreshContext());
+    // The setModel result chain settles in microtasks after the refresh.
+    await vi.waitFor(() => expect(setModel).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    const messages = ctx.ui.notify.mock.calls.map((call) => String(call[0]));
+    expect(messages.some((m) => m.includes("as default model"))).toBe(false);
+  });
+
+  test("surfaces a warning when setModel rejects", async () => {
+    const { pi, registerProvider, setModel, handlers } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM" }])));
+    setModel.mockRejectedValue(new Error("no API key for lunaroute/glm-5.2"));
+    lunarouteExtension(pi);
+    const ctx = fakeContext({ modelRegistry: { getApiKeyForProvider: () => Promise.resolve(undefined) } });
+    await handlers.get("session_start")?.({}, ctx);
+    await refreshModelsOf(registerProvider)(fakeRefreshContext());
+    expect(setModel).toHaveBeenCalledTimes(1);
+    // The setModel result chain settles in microtasks after the refresh.
+    await vi.waitFor(() =>
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        "LunaRoute: could not auto-select a default model: no API key for lunaroute/glm-5.2",
+        "warning",
+      ),
+    );
+  });
+
+  test("falls back to console.warn when no ui is captured and setModel rejects", async () => {
+    const { pi, registerProvider, setModel } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM" }])));
+    setModel.mockRejectedValue(new Error("no API key for lunaroute/glm-5.2"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      lunarouteExtension(pi);
+      await refreshModelsOf(registerProvider)(fakeRefreshContext());
+      expect(setModel).toHaveBeenCalledTimes(1);
+      // The setModel result chain settles in microtasks after the refresh.
+      await vi.waitFor(() =>
+        expect(warn).toHaveBeenCalledWith("LunaRoute: could not auto-select a default model: no API key for lunaroute/glm-5.2"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("does not auto-select when the catalog is empty", async () => {

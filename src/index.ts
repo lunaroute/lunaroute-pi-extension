@@ -23,6 +23,26 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
   // Tracks the session's current model so the post-login refresh can tell
   // whether the user already has a model (don't override) or has none yet.
   let currentModel: Model<Api> | undefined;
+  // Latest session UI (kata 9v71): lets the auto-pick report what it selected
+  // or why it failed. Headless hosts never set it — notifications just skip.
+  let latestUi: { notify(message: string, type?: "info" | "warning" | "error"): void } | undefined;
+  // Best-effort user notification from the refresh callback: info messages
+  // are dropped without a UI; warnings fall back to console.warn. A host UI
+  // quirk (omp hardening, kata npw2) must never break the refresh it rides on.
+  const notifyUser = (message: string, type: "info" | "warning"): void => {
+    try {
+      if (latestUi) latestUi.notify(message, type);
+      else if (type === "warning") console.warn(message);
+    } catch {
+      if (type === "warning") {
+        try {
+          console.warn(message);
+        } catch {
+          /* terminal unavailable — nothing left to do */
+        }
+      }
+    }
+  };
 
   registerLunarouteSettingsCommand(pi, mcpDeps);
 
@@ -64,19 +84,32 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
       },
     },
     refreshModels: createRefreshModels(process.env, {
-      // After a successful network refresh, if the user has no model selected
-      // (first /login lunaroute, before any default is saved), auto-pick the
-      // first LunaRoute model so they don't have to run /model manually.
-      // setModel also saves it as the default, which persist+restore then
-      // remembers on every later launch. The one-time "no default model is
-      // configured for provider 'lunaroute'" notice Pi shows before this
-      // refresh runs is a core limitation (its defaultModelPerProvider map is
-      // static and not extensible for dynamic providers).
+      // After a refresh, if the user has no model selected (first /login
+      // lunaroute, before any default is saved), auto-pick the first
+      // LunaRoute model so they don't have to run /model manually — from the
+      // fresh catalog, or the persisted one when the network attempt failed
+      // (kata 9v71). setModel also saves it as the default, which persist+
+      // restore then remembers on every later launch. The one-time "no
+      // default model is configured for provider 'lunaroute'" notice Pi
+      // shows before this refresh runs is a core limitation (its
+      // defaultModelPerProvider map is static and not extensible for dynamic
+      // providers) — so we say clearly what we picked right after it.
       onCatalogRefreshed: (models) => {
         if (!models.length) return;
         const noModel = !currentModel || (currentModel.provider === "unknown" && currentModel.id === "unknown");
         if (!noModel) return;
-        void pi.setModel(toStoredModel(models[0], resolveRoutingUrl(process.env))).catch(() => {});
+        void pi
+          .setModel(toStoredModel(models[0], resolveRoutingUrl(process.env)))
+          .then((applied) => {
+            // false = auth not configured yet (e.g. unauthenticated
+            // refresh) — benign, nothing to report.
+            if (!applied) return;
+            notifyUser(`LunaRoute: set ${models[0].name ?? models[0].id} as default model (change with /model)`, "info");
+          })
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            notifyUser(`LunaRoute: could not auto-select a default model: ${message}`, "warning");
+          });
       },
     }),
     models: readPersistedModels(process.env),
@@ -84,6 +117,7 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     currentModel = ctx.model;
+    if (ctx.hasUI) latestUi = ctx.ui;
     const settings = readSettings(process.env);
     const key = await ctx.modelRegistry.getApiKeyForProvider(LUNAROUTE_PROVIDER);
     // Hint derives from the key lookup (works on hosts without

@@ -39,32 +39,51 @@ export function createRefreshModels(
     const key = resolveCredentialKey(context.credential);
     if (!key) return restore(context.stored);
 
+    let models: ProviderModelConfig[];
     try {
       const res = await doFetch(`${baseUrl}/models`, {
         signal: context.signal,
         headers: { Authorization: `Bearer ${key}` },
       });
-      if (!res.ok) return restore(context.stored);
-      const body = (await res.json()) as { data?: GatewayModelObject[] };
-      const entries = body.data ?? [];
+      if (!res.ok) {
+        models = restore(context.stored);
+      } else {
+        const body = (await res.json()) as { data?: GatewayModelObject[] };
+        const entries = body.data ?? [];
 
-      const models: ProviderModelConfig[] = [];
-      for (const entry of entries) {
-        const result = mapCatalogEntry(entry);
-        if (result.ok) models.push(result.model);
+        const fetched: ProviderModelConfig[] = [];
+        for (const entry of entries) {
+          const result = mapCatalogEntry(entry);
+          if (result.ok) fetched.push(result.model);
+        }
+        // Persist for next startup. The returned list is applied to the in-memory
+        // registry by the provider-composer wrapper; publish({persist}) writes the
+        // catalog to Pi's ModelsStore so context.stored is populated next launch.
+        // A store-write failure must not discard the fresh catalog — the in-memory
+        // list still updates via the wrapper, and the next refresh retries persist.
+        await context.publish({
+          persist: { models: fetched.map((m) => toStoredModel(m, baseUrl)), checkedAt: Date.now() },
+        }).catch(() => {});
+        models = fetched;
       }
-      // Persist for next startup. The returned list is applied to the in-memory
-      // registry by the provider-composer wrapper; publish({persist}) writes the
-      // catalog to Pi's ModelsStore so context.stored is populated next launch.
-      // A store-write failure must not discard the fresh catalog — the in-memory
-      // list still updates via the wrapper, and the next refresh retries persist.
-      await context.publish({
-        persist: { models: models.map((m) => toStoredModel(m, baseUrl)), checkedAt: Date.now() },
-      }).catch(() => {});
-      onCatalogRefreshed?.(models);
-      return models;
     } catch {
-      return restore(context.stored);
+      models = restore(context.stored);
     }
+    // Notify exactly once per authenticated network attempt, with the list we
+    // return: fresh on success, the persisted catalog when the attempt failed
+    // (network error or non-2xx). Deliberately NOT fired on the offline /
+    // unauthenticated paths above: pi's registerProvider seeds the registry
+    // with an offline refresh at extension-load time, before session_start
+    // reports the session's model — auto-picking from that window would
+    // overwrite a user's saved default (kata 9v71). Invoked outside the
+    // try/catch and guarded so a throwing callback neither double-fires (a
+    // throw inside the old try would have rerouted to the catch path and
+    // re-notified with the stale catalog) nor breaks the refresh it rides on.
+    try {
+      onCatalogRefreshed?.(models);
+    } catch {
+      // The auto-pick side channel must never break the refresh.
+    }
+    return models;
   };
 }
