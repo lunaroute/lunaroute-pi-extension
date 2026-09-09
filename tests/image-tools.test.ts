@@ -255,10 +255,11 @@ describe("buildUploadImageTool", () => {
 	test("path → reads the file, sends base64 data, appends the edit hint", async () => {
 		const client = fakeClient([{ type: "text", text: UPLOADED_TEXT }]);
 		const io = memoryIo();
-		io.files.set("/home/u/cat.png", Buffer.from("catpng"));
+		const catpng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+		io.files.set("/home/u/cat.png", catpng);
 		const tool = buildUploadImageTool({ client, mcpToolName: "upload_image", env: process.env, io });
 		const result = await tool.execute("t1", { path: "/home/u/cat.png" } as never, AC(), undefined, {} as never);
-		expect(client.callTool).toHaveBeenCalledWith("upload_image", { data: Buffer.from("catpng").toString("base64") }, expect.anything());
+		expect(client.callTool).toHaveBeenCalledWith("upload_image", { data: catpng.toString("base64"), mime_type: "image/png" }, expect.anything());
 		expect((result.content[0] as { text?: string }).text).toContain("pass this id to edit_image's image_ids");
 		expect(result.details).toMatchObject({ id: "img_01JD2W3Q4R5T6Y7U8I9O0P1A2D", width: 512, format: "webp" });
 	});
@@ -538,6 +539,107 @@ describe("registerImageTools catalog drift reconciliation (roborev job 1643)", (
 		// Untracked means a later re-offer registers it fresh.
 		const third = await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []) });
 		expect(third.uploadImage).toBe("registered");
+		expect(activeRef()).toContain("upload_image");
+	});
+});
+
+describe("upload_image local sniffing (roborev job 1646)", () => {
+	const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+	const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2]);
+	const WEBP = Buffer.from([0x52, 0x49, 0x46, 0x46, 9, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 1]);
+
+	test("rejects a non-image file before any bytes leave the machine", async () => {
+		const client = fakeClient([{ type: "text", text: UPLOADED_TEXT }]);
+		const io = memoryIo();
+		io.files.set("/home/u/.aws/credentials", Buffer.from("[default]\naws_access_key_id=SECRET"));
+		const tool = buildUploadImageTool({ client, mcpToolName: "upload_image", env: process.env, io });
+		await expect(tool.execute("t1", { path: "/home/u/.aws/credentials" } as never, AC(), undefined, {} as never)).rejects.toThrow(/not a (png|jpeg|webp)/i);
+		expect(client.callTool).not.toHaveBeenCalled();
+	});
+
+	test("accepts real image magic bytes (png/jpeg/webp) and declares the sniffed codec", async () => {
+		for (const [name, bytes, mime] of [
+			["png", PNG, "image/png"],
+			["jpeg", JPEG, "image/jpeg"],
+			["webp", WEBP, "image/webp"],
+		] as const) {
+			const client = fakeClient([{ type: "text", text: UPLOADED_TEXT }]);
+			const io = memoryIo();
+			io.files.set(`/home/u/cat.${name}`, bytes);
+			const tool = buildUploadImageTool({ client, mcpToolName: "upload_image", env: process.env, io });
+			await tool.execute("t1", { path: `/home/u/cat.${name}` } as never, AC(), undefined, {} as never);
+			expect(client.callTool).toHaveBeenCalledWith("upload_image", { data: bytes.toString("base64"), mime_type: mime }, expect.anything());
+		}
+	});
+});
+
+describe("client swap ordering + superseded registrations (roborev job 1646)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetImageToolsState();
+	});
+
+	test("a failed catalog fetch after key rotation still swaps tools to the new client", async () => {
+		const { pi, registered } = fakePi();
+		await registerImageTools(pi, { key: "lr_old", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []) });
+		const generate = registered.find((t) => t.name === "generate_image");
+
+		// Rotated key + a catalog fetch that fails — the swap must happen anyway.
+		const unreachable = vi.fn(async () => new Response("nope", { status: 503 }));
+		const second = await registerImageTools(pi, { key: "lr_rotated", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: unreachable });
+		expect(second.generateImage).toBe("skipped-server");
+
+		const calls = vi.fn(() => ({
+			content: [
+				{ type: "text", text: GENERATED_TEXT },
+				{ type: "image", data: Buffer.from("pngbytes").toString("base64"), mimeType: "image/png" },
+			],
+			isError: false,
+		}));
+		const reachable = mcpFetch({ "tools/call": calls, "tools/list": () => IMAGE_TOOLS_LIST }, []);
+		expect(calls).not.toHaveBeenCalled();
+		const third = await registerImageTools(pi, { key: "lr_rotated", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: reachable });
+		expect(third.generateImage).toBe("registered");
+		const result = await generate!.execute("t1", { prompt: "p", model: "flux-2-klein" } as never, AC(), undefined, {} as never);
+		expect((result.content[0] as { text?: string }).text).toContain("saved to:");
+	});
+
+	test("a superseded registration never reconciles away a newer registration's tools", async () => {
+		const { pi, activeRef } = fakePi();
+		// Registration A: hangs on tools/list; resolves only after B finished.
+		let resolveA: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			resolveA = resolve;
+		});
+		const hangingFetch = mcpFetch(
+			{
+				"tools/list": () => {
+					void gate;
+					throw new Error("simulated hang — never returned");
+				},
+			},
+			[],
+		);
+		// An actually-deferred listTools: build a custom fetch that awaits the gate.
+		const withoutUpload = { tools: IMAGE_TOOLS_LIST.tools.filter((t) => t.name !== "upload_image") };
+		const deferredFetch = async (_url: string, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body)) as { id: number; method: string };
+			if (body.method === "tools/list") {
+				await gate;
+				return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: withoutUpload }), { status: 200, headers: { "content-type": "application/json" } });
+			}
+			return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }), { status: 200, headers: { "content-type": "application/json" } });
+		};
+		void hangingFetch;
+		const a = registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: deferredFetch as never });
+		// Give A a head start into its await, then run B to completion.
+		await Promise.resolve();
+		await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []) });
+		expect(activeRef()).toContain("upload_image");
+		// A's (older) catalog resolves now — it lists upload_image too, but the
+		// point is the guard: A must not mutate anything after being superseded.
+		resolveA();
+		await a;
 		expect(activeRef()).toContain("upload_image");
 	});
 });

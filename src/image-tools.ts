@@ -156,6 +156,30 @@ export function resolveImageDir(env: NodeJS.ProcessEnv): string {
 	return join(agentDirFromEnv(env), "lunaroute-images");
 }
 
+/** Sniff the image codec from magic bytes (roborev job 1646): the server
+ * sniffs too, but the bytes must not LEAVE the machine before that check —
+ * a path argument pointing at credentials must fail locally. */
+export function sniffImageMime(bytes: Uint8Array): "image/png" | "image/jpeg" | "image/webp" | undefined {
+	if (
+		bytes.length >= 8 &&
+		bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 &&
+		bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a
+	) {
+		return "image/png";
+	}
+	if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+		return "image/jpeg";
+	}
+	if (
+		bytes.length >= 12 &&
+		bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+		bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+	) {
+		return "image/webp";
+	}
+	return undefined;
+}
+
 function extForFormat(format: string): string {
 	if (format === "jpeg") return ".jpg";
 	if (format === "png" || format === "webp") return `.${format}`;
@@ -444,7 +468,13 @@ export function buildUploadImageTool(deps: ImageToolBuildDeps) {
 					);
 				}
 				const data = await io.readFile(params.path);
-				args = { data: Buffer.from(data).toString("base64") };
+				const sniffed = sniffImageMime(data);
+				if (!sniffed) {
+					throw new Error(
+						`${params.path} is not a png, jpeg, or webp image (magic bytes not recognized) — refusing to upload it`,
+					);
+				}
+				args = { data: Buffer.from(data).toString("base64"), mime_type: sniffed };
 			} else if (params.url) {
 				args = { url: params.url };
 			} else {
@@ -528,6 +558,10 @@ const registeredModelEnums = new Map<string, { enum: string[]; description?: str
 // reaches already-registered tools without touching their registrations
 // (roborev job 1640).
 const currentClient: { client?: LunarouteMcpClient } = {};
+// Monotonic registration generation: only the newest registration may mutate
+// the shared state — an older in-flight one (its tools/list resolved late)
+// must never reconcile away what a newer one registered (roborev job 1646).
+let registrationGeneration = 0;
 
 /** Names of the image tools this process registered (settings live-apply). */
 export function getRegisteredImageToolNames(): ReadonlySet<string> {
@@ -539,6 +573,7 @@ export function _resetImageToolsState(): void {
 	registeredImageToolNames.clear();
 	registeredModelEnums.clear();
 	currentClient.client = undefined;
+	registrationGeneration = 0;
 }
 
 /** A stable facade delegating to the current client — captured by tool
@@ -583,6 +618,13 @@ export async function registerImageTools(
 		fetchImpl: deps.fetchImpl ?? (fetch as FetchLike),
 	});
 
+	// Swap the shared client BEFORE catalog discovery (roborev job 1646):
+	// after a key rotation, the fresh client is strictly better than the
+	// expired one even when the catalog fetch itself fails transiently —
+	// already-registered tools pick the new key up on their next call.
+	const generation = ++registrationGeneration;
+	currentClient.client = client;
+
 	let descriptors: { name: string; inputSchema?: unknown }[];
 	try {
 		descriptors = await (client.listToolDescriptors?.() ??
@@ -595,6 +637,17 @@ export async function registerImageTools(
 			editImage: "skipped-server",
 			uploadImage: "skipped-server",
 			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+	if (generation !== registrationGeneration) {
+		// A newer registration started while our catalog fetch was in
+		// flight — it owns the shared state now; mutating from this stale
+		// view could reconcile away its tools.
+		return {
+			generateImage: "skipped-server",
+			editImage: "skipped-server",
+			uploadImage: "skipped-server",
+			error: "superseded by a newer registration",
 		};
 	}
 
@@ -617,7 +670,6 @@ export async function registerImageTools(
 
 	// Every registered tool talks through this shared, swappable client (a
 	// rotated key on re-login reaches them without re-registration).
-	currentClient.client = client;
 	const stableClient = delegatingClient(currentClient);
 
 	const registration: ImageToolsRegistration = {
