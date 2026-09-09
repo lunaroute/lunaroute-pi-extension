@@ -129,6 +129,33 @@ If both this extension and another web-search extension are active, pi's
 first-wins rule decides who owns the plain `web_search` name; use
 `--exclude-tools` if you need to pick manually.
 
+## Image tools
+
+When you are logged in, the extension registers first-class
+`generate_image`, `edit_image`, and `upload_image` Pi tools backed by the
+hosted LunaRoute MCP server — the same direct Streamable HTTP transport as
+the web tools, no `pi-mcp-adapter` install required.
+
+- **No local detection.** Unlike `web_search`, these names are
+  LunaRoute-specific: the extension registers whatever the hosted server
+  offers for your org (`tools/list` gates entitlement, policy, and the
+  image kill switch server-side).
+- **Files on disk.** Generated and edited images are saved to a per-
+  installation folder — `<agentDir>/lunaroute-images/` (default
+  `~/.pi/agent/lunaroute-images/`) — named `img_<id>.<format>`. The tool
+  result tells the model the absolute path, the `img_…` id (for later
+  `edit_image` calls), and the time-limited URL. Relocate the folder with
+  `LUNAROUTE_IMAGE_DIR`.
+- **Model awareness.** The per-org model enum and each model's limits
+  (default size, step range, formats) are baked into the tool schema from
+  `tools/list`, so the model picks valid parameters instead of guessing.
+- **Uploads.** `upload_image` takes a local `path` (the extension does the
+  base64) or a `url`; the server sniffs the codec. Files over the 11 MiB
+  server ceiling are rejected before upload. The returned `img_…` id feeds
+  `edit_image`'s `image_ids`.
+- **Kill switch.** `/lunaroute` → *Image tools* toggle, or
+  `LUNAROUTE_IMAGE_TOOLS=off`. Logged out: nothing registers (silent).
+
 ## Settings
 
 Run `/lunaroute` in Pi to open the settings UI (interactive mode):
@@ -139,11 +166,13 @@ Run `/lunaroute` in Pi to open the settings UI (interactive mode):
   immediately; on restores them without a restart.
 - **Search provider** — server / brave / exa / kagi. The default provider
   used for every `web_search`; the model can still override it per call.
+- **Image tools** — on/off. Off removes `generate_image` / `edit_image` /
+  `upload_image` immediately; on restores them without a restart.
 
 Settings persist in `~/.pi/agent/lunaroute.json`:
 
 ```json
-{ "mcp": "on", "webTools": "on", "searchProvider": "server" }
+{ "mcp": "on", "webTools": "on", "searchProvider": "server", "imageTools": "on" }
 ```
 
 Missing keys fall back to these defaults (which equal the pre-settings
@@ -162,6 +191,8 @@ for dev/staging via environment variables before starting Pi:
 | `LUNAROUTE_API_URL` | `https://api.lunaroute.com` | API host for `/v1/auth/exchange` |
 | `LUNAROUTE_FRONT_URL` | `https://app.lunaroute.com` | Web app host for `/device-auth/pi` browser login |
 | `LUNAROUTE_MCP_URL` | `https://mcp.lunaroute.com/mcp` | Hosted MCP server URL registered with pi-mcp-adapter |
+| `LUNAROUTE_IMAGE_DIR` | `<agentDir>/lunaroute-images` | Where generated/edited images are saved (kata e30g) |
+| `LUNAROUTE_IMAGE_TOOLS` | *(unset)* | Set to `off`/`0`/`false` to disable the first-class image tools |
 
 ## Troubleshooting
 

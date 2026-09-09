@@ -11,6 +11,7 @@ import {
 	registerLunarouteMcp,
 } from "./mcp.js";
 import { readSettings, settingsPath, writeSettings, type LunarouteSettings } from "./settings.js";
+import { getRegisteredImageToolNames, registerImageTools } from "./image-tools.js";
 import { getRegisteredWebToolNames, registerWebTools } from "./web-tools.js";
 
 /** The `/lunaroute` settings command (kata bjy9): a pi-native SettingsList
@@ -45,6 +46,13 @@ export function buildSettingsItems(settings: LunarouteSettings): SettingItem[] {
 			label: "Web search tools",
 			description: "First-class web_search / web_fetch backed by LunaRoute",
 			currentValue: settings.webTools,
+			values: ["on", "off"],
+		},
+		{
+			id: "imageTools",
+			label: "Image tools",
+			description: "First-class generate_image / edit_image / upload_image backed by LunaRoute",
+			currentValue: settings.imageTools,
 			values: ["on", "off"],
 		},
 		{
@@ -90,6 +98,7 @@ export function createSettingChangeApplier(
 		if (id === "searchProvider") return; // next web_search call reads it
 		try {
 			if (id === "webTools") await applyWebTools(pi, deps, ui, getApiKey, settings, newValue === "on");
+			if (id === "imageTools") await applyImageTools(pi, deps, ui, getApiKey, settings, newValue === "on");
 			if (id === "mcp") await applyMcp(pi, deps, ui, getApiKey, newValue === "on");
 		} catch (err) {
 			// Never throw from a SettingsList change callback.
@@ -236,4 +245,51 @@ export function registerLunarouteSettingsCommand(pi: ExtensionAPI, deps: Setting
 			});
 		},
 	});
+}
+
+/** Image-tools live-apply (kata e30g). Mirrors applyWebTools minus the
+ * presence-detection case — there is no "another extension already provides
+ * generate_image" branch by design. */
+async function applyImageTools(
+	pi: ExtensionAPI,
+	deps: SettingsCommandDeps,
+	ui: { notify: NotifyFn },
+	getApiKey: () => Promise<string | undefined>,
+	settings: LunarouteSettings,
+	on: boolean,
+): Promise<void> {
+	const ours = getRegisteredImageToolNames();
+	if (!on) {
+		if (ours.size > 0) {
+			pi.setActiveTools(pi.getActiveTools().filter((name) => !ours.has(name)));
+		}
+		ui.notify("LunaRoute image tools disabled", "info");
+		return;
+	}
+	if (ours.size > 0) {
+		// Registered (possibly inactive after an off-toggle this session):
+		// re-activate directly.
+		pi.setActiveTools([...new Set([...pi.getActiveTools(), ...ours])]);
+		ui.notify("LunaRoute image tools enabled", "info");
+		return;
+	}
+	const key = await getApiKey();
+	if (!key) {
+		ui.notify("Not logged in — run /login lunaroute to enable image tools.", "info");
+		return;
+	}
+	const result = await registerImageTools(pi, {
+		key,
+		env: deps.env,
+		version: deps.version,
+		sessionId: deps.sessionId,
+		settings,
+	});
+	if (result.generateImage === "registered" || result.editImage === "registered" || result.uploadImage === "registered") {
+		ui.notify("LunaRoute image tools enabled", "info");
+	} else if (result.error !== undefined) {
+		ui.notify("LunaRoute image tools unavailable from the server right now.", "warning");
+	} else {
+		ui.notify("LunaRoute image tools are not available for your organization.", "info");
+	}
 }

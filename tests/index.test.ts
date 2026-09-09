@@ -335,16 +335,24 @@ describe("pi extension v2 wiring", () => {
   test("session_start leaves web tools alone when they already exist locally", async () => {
     const { pi, handlers, registeredTools } = fakePi({ toolNames: ["web_search", "fetch_content"] });
     lunarouteExtension(pi);
-    const fetchMock = vi.fn(async () => {
-      throw new Error("must not be called when tools exist locally");
+    // Image tools (kata e30g) have no local detection by design: their
+    // availability is discovered from the server, so session_start now makes
+    // an image-tools tools/list roundtrip even when web tools exist locally.
+    // Web tools themselves must still not register or fetch for detection.
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => {
+      throw new Error("image tools discovery failure");
     });
     vi.stubGlobal("fetch", fetchMock);
     const ctx = fakeContext({
       modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
     });
     await handlers.get("session_start")?.({}, ctx);
-    expect(fetchMock).not.toHaveBeenCalled();
     expect(registeredTools).toHaveLength(0);
+    // The only server traffic is the image-tools discovery (initialize +
+    // tools/list), never a web-tools registration attempt.
+    const methods = fetchMock.mock.calls.map(([, init]) => (JSON.parse(String(init?.body)) as { method: string }).method);
+    expect(methods).toEqual(["initialize", "tools/list"]);
+    expect(methods.filter((m) => m === "tools/call")).toHaveLength(0);
   });
 
   // ========================================================================
@@ -688,6 +696,37 @@ describe("model persistence and auto-select", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  test("session_start registers image tools when the server offers them", async () => {
+    const { pi, registerProvider, handlers, registeredTools } = fakePi();
+    installFakeAdapter(fakeEventBus()); // not used, but keeps mcp registration silent
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              tools: [
+                { name: "generate_image", inputSchema: { type: "object", properties: { model: { type: "string", enum: ["flux-2-klein"] } } } },
+                { name: "edit_image" },
+                { name: "upload_image" },
+              ],
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    lunarouteExtension(pi);
+    void registerProvider;
+    const ctx = fakeContext({ modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") } });
+    await handlers.get("session_start")?.({}, ctx);
+    const names = registeredTools.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["generate_image", "edit_image", "upload_image"]));
   });
 
   test("does not auto-select when the catalog is empty", async () => {

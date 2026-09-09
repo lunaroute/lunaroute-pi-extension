@@ -18,6 +18,7 @@ export const LUNAROUTE_ENV_FRONT_URL = "LUNAROUTE_FRONT_URL";
 export const LUNAROUTE_ENV_MCP_URL = "LUNAROUTE_MCP_URL";
 // Lives here (not web-tools.ts) so settings.ts can import it without a cycle.
 export const LUNAROUTE_ENV_WEB_TOOLS = "LUNAROUTE_WEB_TOOLS";
+export const LUNAROUTE_ENV_IMAGE_TOOLS = "LUNAROUTE_IMAGE_TOOLS";
 
 // Production defaults — confirm against the deployed LunaRoute environment before release.
 export const DEFAULT_ROUTING_URL = "https://gw.lunaroute.com/v1";

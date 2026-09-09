@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { LUNAROUTE_ENV_WEB_TOOLS, agentDirFromEnv } from "./lunaroute.js";
+import { LUNAROUTE_ENV_IMAGE_TOOLS, LUNAROUTE_ENV_WEB_TOOLS, agentDirFromEnv } from "./lunaroute.js";
 
 /** User-facing settings persisted at `<agentDir>/lunaroute.json` (kata bjy9).
  *
@@ -19,12 +19,14 @@ export interface LunarouteSettings {
   mcp: Toggle;
   webTools: Toggle;
   searchProvider: SearchProviderSetting;
+  imageTools: Toggle;
 }
 
 export const DEFAULT_SETTINGS: LunarouteSettings = {
   mcp: "on",
   webTools: "on",
   searchProvider: "server",
+  imageTools: "on",
 };
 
 /** Static v1 list; the server may support more, the TUI offers these. */
@@ -87,6 +89,7 @@ export function readSettings(env: NodeJS.ProcessEnv, io: SettingsIo = defaultIo)
   return {
     mcp: parseToggle(obj.mcp, DEFAULT_SETTINGS.mcp),
     webTools: parseToggle(obj.webTools, DEFAULT_SETTINGS.webTools),
+    imageTools: parseToggle(obj.imageTools, DEFAULT_SETTINGS.imageTools),
     searchProvider: parseSearchProvider(obj.searchProvider),
   };
 }
@@ -114,6 +117,14 @@ export function webToolsEnabled(env: NodeJS.ProcessEnv, settings: LunarouteSetti
   const v = env[LUNAROUTE_ENV_WEB_TOOLS];
   if (v === "off" || v === "0" || v === "false") return false;
   return settings.webTools === "on";
+}
+
+/** Image tools enabled? Same contract as webToolsEnabled — the env escape
+ * hatch only ever disables; the file is the user knob (kata e30g). */
+export function imageToolsEnabled(env: NodeJS.ProcessEnv, settings: LunarouteSettings): boolean {
+  const v = env[LUNAROUTE_ENV_IMAGE_TOOLS];
+  if (v === "off" || v === "0" || v === "false") return false;
+  return settings.imageTools === "on";
 }
 
 /** MCP registration enabled? (The user-config defer rule is orthogonal and
