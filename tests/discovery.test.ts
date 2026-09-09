@@ -265,12 +265,54 @@ describe("lunaroute refreshModels persist + restore", () => {
     expect(models.map((m) => m.id)).toEqual(["cached-1"]);
   });
 
-  test("invokes onCatalogRefreshed after a successful fetch, not on failure", async () => {
+  test("invokes onCatalogRefreshed once with the fresh catalog after a successful fetch", async () => {
     const onCatalogRefreshed = vi.fn();
     vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "x" }])));
     await createRefreshModels({}, { onCatalogRefreshed })(fakeContext());
     expect(onCatalogRefreshed).toHaveBeenCalledTimes(1);
     expect((onCatalogRefreshed.mock.calls[0][0] as { id: string }[]).map((m) => m.id)).toEqual(["x"]);
+  });
+
+  test("invokes onCatalogRefreshed with the persisted catalog when the response is not ok", async () => {
+    const onCatalogRefreshed = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 503 })));
+    const models = await createRefreshModels({}, { onCatalogRefreshed })(
+      fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
+    );
+    expect(models.map((m) => m.id)).toEqual(["cached-1"]);
+    expect(onCatalogRefreshed).toHaveBeenCalledTimes(1);
+    expect((onCatalogRefreshed.mock.calls[0][0] as { id: string }[]).map((m) => m.id)).toEqual(["cached-1"]);
+  });
+
+  test("invokes onCatalogRefreshed with the persisted catalog when the fetch throws", async () => {
+    const onCatalogRefreshed = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    const models = await createRefreshModels({}, { onCatalogRefreshed })(
+      fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
+    );
+    expect(models.map((m) => m.id)).toEqual(["cached-1"]);
+    expect(onCatalogRefreshed).toHaveBeenCalledTimes(1);
+    expect((onCatalogRefreshed.mock.calls[0][0] as { id: string }[]).map((m) => m.id)).toEqual(["cached-1"]);
+  });
+
+  test("does not invoke onCatalogRefreshed on the offline path even with a credential and stored models", async () => {
+    const onCatalogRefreshed = vi.fn();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const models = await createRefreshModels({}, { onCatalogRefreshed })(
+      fakeContext({ allowNetwork: false, stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
+    );
+    expect(models.map((m) => m.id)).toEqual(["cached-1"]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(onCatalogRefreshed).not.toHaveBeenCalled();
+  });
+
+  test("invokes onCatalogRefreshed exactly once even when the callback throws", async () => {
+    const onCatalogRefreshed = vi.fn(() => { throw new Error("callback boom"); });
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "fresh-1" }] as { id: string }[])));
+    const models = await createRefreshModels({}, { onCatalogRefreshed })(fakeContext());
+    expect(models.map((m) => m.id)).toEqual(["fresh-1"]);
+    expect(onCatalogRefreshed).toHaveBeenCalledTimes(1);
   });
 
   test("does not persist or notify onCatalogRefreshed when there is no credential", async () => {
