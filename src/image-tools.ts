@@ -474,6 +474,14 @@ export function buildUploadImageTool(deps: ImageToolBuildDeps) {
 					);
 				}
 				const data = await io.readFile(params.path);
+				if (data.byteLength > UPLOAD_MAX_BYTES) {
+					// TOCTOU (roborev job 1651): the file grew or was replaced
+					// between stat and read — enforce the cap on the bytes
+					// actually read, not just the earlier stat.
+					throw new Error(
+						`${params.path} grew past the ${(UPLOAD_MAX_BYTES / (1024 * 1024)) | 0} MiB LunaRoute upload ceiling while reading`,
+					);
+				}
 				const sniffed = sniffImageMime(data);
 				if (!sniffed) {
 					throw new Error(
@@ -519,7 +527,7 @@ export function buildUploadImageTool(deps: ImageToolBuildDeps) {
 // Registration orchestrator
 // ============================================================================
 
-export type ImageToolOutcome = "registered" | "skipped-server" | "skipped-disabled" | "register-failed";
+export type ImageToolOutcome = "registered" | "skipped-existing" | "skipped-server" | "skipped-disabled" | "register-failed";
 
 export interface ImageToolsRegistration {
 	generateImage: ImageToolOutcome;
@@ -674,14 +682,15 @@ export async function registerImageTools(
 	const uploadDescriptor = byName.get("upload_image");
 
 	// Reconcile catalog drift (roborev job 1643): a tool the server no longer
-	// offers (entitlement, org policy, or kill-switch change) is deactivated
-	// and untracked — pi has no tool unregister, so the definition remains
-	// but the model never sees it, and a later re-offer registers it fresh.
+	// offers (entitlement, org policy, or kill-switch change) is deactivated —
+	// pi has no tool unregister, so the definition remains but the model
+	// never sees it. Ownership is KEPT (it is still our registration; the
+	// name remains in getAllTools): a later re-offer re-activates it, and a
+	// changed enum re-registers — and the ownership pre-check below never
+	// mistakes our own drifted tool for a foreign one (roborev job 1651).
 	for (const name of [...registeredImageToolNames]) {
 		if (!byName.has(name)) {
 			pi.setActiveTools(pi.getActiveTools().filter((n) => n !== name));
-			registeredImageToolNames.delete(name);
-			registeredModelEnums.delete(name);
 		}
 	}
 
@@ -737,6 +746,14 @@ export async function registerImageTools(
 	];
 	for (const [key, name, build] of offerings) {
 		if (!byName.has(name)) continue;
+		// Ownership pre-check (roborev job 1651): cross-extension tool names
+		// are first-registration-wins, so if another extension already
+		// provides this name we stay silent — never register, never track,
+		// never touch its active state from reconciliation or toggles.
+		if (!registeredImageToolNames.has(name) && pi.getAllTools().some((t) => t.name === name)) {
+			registration[key] = "skipped-existing";
+			continue;
+		}
 		const enumInfo = extractModelEnum(byName.get(name)?.inputSchema);
 		const ours = registeredImageToolNames.has(name);
 		if (ours && modelEnumEquals(registeredModelEnums.get(name), enumInfo)) {

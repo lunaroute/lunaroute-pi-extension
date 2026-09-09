@@ -307,16 +307,17 @@ describe("extractModelEnum", () => {
 	});
 });
 
-function fakePi() {
+function fakePi(options: { foreignTools?: string[] } = {}) {
 	const registered: ToolDefinition<never, never>[] = [];
-	let active: string[] = ["read", "bash"];
+	const foreign = [...(options.foreignTools ?? [])];
+	let active: string[] = ["read", "bash", ...foreign];
 	const pi = {
 		registerTool: vi.fn((tool: ToolDefinition<never, never>) => registered.push(tool)),
 		getActiveTools: () => [...active],
 		setActiveTools: (names: string[]) => {
 			active = [...names];
 		},
-		getAllTools: () => registered.map((t) => ({ name: t.name })),
+		getAllTools: () => [...foreign.map((name) => ({ name })), ...registered.map((t) => ({ name: t.name }))],
 	} as unknown as ExtensionAPI;
 	return { pi, registered, activeRef: () => active };
 }
@@ -525,7 +526,7 @@ describe("registerImageTools catalog drift reconciliation (roborev job 1643)", (
 		_resetImageToolsState();
 	});
 
-	test("a tool the server no longer offers is deactivated and untracked on re-entry", async () => {
+	test("a tool the server no longer offers is deactivated on re-entry; ownership is kept", async () => {
 		const { pi, activeRef } = fakePi();
 		await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []) });
 		expect(activeRef()).toContain("upload_image");
@@ -536,7 +537,8 @@ describe("registerImageTools catalog drift reconciliation (roborev job 1643)", (
 		expect(activeRef()).not.toContain("upload_image");
 		expect(activeRef()).toContain("generate_image");
 
-		// Untracked means a later re-offer registers it fresh.
+		// Ownership kept: a later re-offer re-activates (no re-registration —
+		// and the ownership pre-check must not mistake it for a foreign tool).
 		const third = await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []) });
 		expect(third.uploadImage).toBe("registered");
 		expect(activeRef()).toContain("upload_image");
@@ -694,5 +696,39 @@ describe("server-id validation + disable-during-discovery (roborev job 1649)", (
 		expect(outcome.generateImage).toBe("skipped-server");
 		expect(outcome.error).toContain("superseded");
 		expect(activeRef()).not.toContain("generate_image");
+	});
+});
+
+describe("foreign same-named tools + upload TOCTOU (roborev job 1651)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetImageToolsState();
+	});
+
+	test("a foreign same-named tool is neither registered, tracked, nor ever toggled by us", async () => {
+		const { pi, registered, activeRef } = fakePi({ foreignTools: ["generate_image"] });
+		const first = await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []) });
+		expect(first).toMatchObject({ generateImage: "skipped-existing", editImage: "registered", uploadImage: "registered" });
+		expect(registered.map((t) => t.name).sort()).toEqual(["edit_image", "upload_image"]);
+		// The foreign tool stays active and untouched.
+		expect(activeRef()).toContain("generate_image");
+
+		// Catalog drift must not deactivate the foreign tool either.
+		const withoutGenerate = { tools: IMAGE_TOOLS_LIST.tools.filter((t) => t.name !== "generate_image") };
+		await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({ "tools/list": () => withoutGenerate }, []) });
+		expect(activeRef()).toContain("generate_image");
+		expect(activeRef()).toContain("edit_image");
+	});
+
+	test("a file that grows between stat and read is still rejected", async () => {
+		const client = fakeClient([{ type: "text", text: UPLOADED_TEXT }]);
+		const io = memoryIo();
+		io.files.set("/home/u/grew.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+		const big = new Uint8Array(UPLOAD_MAX_BYTES + 1);
+		big.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+		io.readFile = async () => big; // stat said 8 bytes; the read says otherwise
+		const tool = buildUploadImageTool({ client, mcpToolName: "upload_image", env: process.env, io });
+		await expect(tool.execute("t1", { path: "/home/u/grew.png" } as never, AC(), undefined, {} as never)).rejects.toThrow(/11 MiB/);
+		expect(client.callTool).not.toHaveBeenCalled();
 	});
 });

@@ -287,6 +287,8 @@ async function applyImageTools(
 	});
 	if (result.generateImage === "registered" || result.editImage === "registered" || result.uploadImage === "registered") {
 		ui.notify("LunaRoute image tools enabled", "info");
+	} else if (result.generateImage === "skipped-existing" || result.editImage === "skipped-existing" || result.uploadImage === "skipped-existing") {
+		ui.notify("Another extension already provides image tools — LunaRoute's stays off.", "info");
 	} else if (result.error !== undefined) {
 		ui.notify("LunaRoute image tools unavailable from the server right now.", "warning");
 	} else {
