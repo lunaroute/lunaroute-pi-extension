@@ -258,19 +258,12 @@ async function applyImageTools(
 	settings: LunarouteSettings,
 	on: boolean,
 ): Promise<void> {
-	const ours = getRegisteredImageToolNames();
 	if (!on) {
+		const ours = getRegisteredImageToolNames();
 		if (ours.size > 0) {
 			pi.setActiveTools(pi.getActiveTools().filter((name) => !ours.has(name)));
 		}
 		ui.notify("LunaRoute image tools disabled", "info");
-		return;
-	}
-	if (ours.size > 0) {
-		// Registered (possibly inactive after an off-toggle this session):
-		// re-activate directly.
-		pi.setActiveTools([...new Set([...pi.getActiveTools(), ...ours])]);
-		ui.notify("LunaRoute image tools enabled", "info");
 		return;
 	}
 	const key = await getApiKey();
@@ -278,6 +271,10 @@ async function applyImageTools(
 		ui.notify("Not logged in — run /login lunaroute to enable image tools.", "info");
 		return;
 	}
+	// Always delegate — registerImageTools revalidates the server catalog on
+	// every call: it reconciles away tools the server stopped offering and
+	// re-activates (never re-registers) the ones it still does (roborev job
+	// 1643).
 	const result = await registerImageTools(pi, {
 		key,
 		env: deps.env,

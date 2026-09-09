@@ -201,7 +201,17 @@ describe("createSettingChangeApplier", () => {
 			await applier("imageTools", "off");
 			expect(getActive()).not.toContain("generate_image");
 			expect(getActive()).toContain("read");
-			await applier("imageTools", "on");
+			// On-toggle revalidates the server catalog (roborev job 1643) —
+			// stub the hosted server for the re-check; the tools are still
+			// offered, so they are re-activated without re-registration.
+			// Same catalog the initial registration saw (including the model
+			// enum) — so the re-check re-activates without re-registering.
+			vi.stubGlobal("fetch", IMAGE_TOOLS_FETCH);
+			try {
+				await applier("imageTools", "on");
+			} finally {
+				vi.unstubAllGlobals();
+			}
 			expect(getActive()).toContain("generate_image");
 			expect(pi.registerTool).toHaveBeenCalledTimes(3);
 			expect(ui.notify).toHaveBeenCalledWith("LunaRoute image tools disabled", "info");
@@ -452,5 +462,46 @@ describe("registerLunarouteSettingsCommand", () => {
 		component!.handleInput("\r");
 		await new Promise((r) => setTimeout(r, 0)); // applier runs void-async
 		expect(write).toHaveBeenCalledWith(ENV, { ...DEFAULT_SETTINGS, webTools: "off" });
+	});
+});
+
+describe("imageTools on-toggle revalidation (roborev job 1643)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetImageToolsState();
+	});
+
+	test("on re-activates only what the server still offers", async () => {
+		const { pi, getActive } = fakePi();
+		const fullFetch = mcpFetch({
+			initialize: () => ({}),
+			"notifications/initialized": () => undefined,
+			"tools/list": () => ({ tools: [{ name: "generate_image" }, { name: "upload_image" }] }),
+		});
+		await registerImageTools(pi, { key: "lr_key", env: ENV, version: "0.6.0-test", sessionId: "s", fetchImpl: fullFetch });
+		expect(getActive()).toContain("upload_image");
+
+		const ui = { notify: vi.fn() };
+		const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", DEFAULT_SETTINGS);
+		await applier("imageTools", "off");
+		expect(getActive()).not.toContain("upload_image");
+
+		// The server stopped offering upload_image while we were off.
+		vi.stubGlobal(
+			"fetch",
+			mcpFetch({
+				initialize: () => ({}),
+				"notifications/initialized": () => undefined,
+				"tools/list": () => ({ tools: [{ name: "generate_image" }] }),
+			}),
+		);
+		try {
+			await applier("imageTools", "on");
+			expect(getActive()).toContain("generate_image");
+			expect(getActive()).not.toContain("upload_image");
+			expect(ui.notify).toHaveBeenCalledWith("LunaRoute image tools enabled", "info");
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });

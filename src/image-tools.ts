@@ -603,6 +603,18 @@ export async function registerImageTools(
 	const editDescriptor = byName.get("edit_image");
 	const uploadDescriptor = byName.get("upload_image");
 
+	// Reconcile catalog drift (roborev job 1643): a tool the server no longer
+	// offers (entitlement, org policy, or kill-switch change) is deactivated
+	// and untracked — pi has no tool unregister, so the definition remains
+	// but the model never sees it, and a later re-offer registers it fresh.
+	for (const name of [...registeredImageToolNames]) {
+		if (!byName.has(name)) {
+			pi.setActiveTools(pi.getActiveTools().filter((n) => n !== name));
+			registeredImageToolNames.delete(name);
+			registeredModelEnums.delete(name);
+		}
+	}
+
 	// Every registered tool talks through this shared, swappable client (a
 	// rotated key on re-login reaches them without re-registration).
 	currentClient.client = client;

@@ -517,3 +517,27 @@ describe("registerImageTools credential/schema freshness (roborev job 1640)", ()
 		]);
 	});
 });
+
+describe("registerImageTools catalog drift reconciliation (roborev job 1643)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetImageToolsState();
+	});
+
+	test("a tool the server no longer offers is deactivated and untracked on re-entry", async () => {
+		const { pi, activeRef } = fakePi();
+		await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []) });
+		expect(activeRef()).toContain("upload_image");
+
+		const withoutUpload = { tools: IMAGE_TOOLS_LIST.tools.filter((t) => t.name !== "upload_image") };
+		const second = await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({ "tools/list": () => withoutUpload }, []) });
+		expect(second).toMatchObject({ generateImage: "registered", uploadImage: "skipped-server" });
+		expect(activeRef()).not.toContain("upload_image");
+		expect(activeRef()).toContain("generate_image");
+
+		// Untracked means a later re-offer registers it fresh.
+		const third = await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []) });
+		expect(third.uploadImage).toBe("registered");
+		expect(activeRef()).toContain("upload_image");
+	});
+});
