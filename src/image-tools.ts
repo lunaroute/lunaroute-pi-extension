@@ -483,7 +483,7 @@ export function buildUploadImageTool(deps: ImageToolBuildDeps) {
 // Registration orchestrator
 // ============================================================================
 
-export type ImageToolOutcome = "registered" | "skipped-server" | "skipped-disabled";
+export type ImageToolOutcome = "registered" | "skipped-server" | "skipped-disabled" | "register-failed";
 
 export interface ImageToolsRegistration {
 	generateImage: ImageToolOutcome;
@@ -573,57 +573,63 @@ export async function registerImageTools(
 	const editDescriptor = byName.get("edit_image");
 	const uploadDescriptor = byName.get("upload_image");
 
-	const register = <TParams extends TSchema, TDetails, TState>(
-		tool: ToolDefinition<TParams, TDetails, TState>,
-	): void => {
-		pi.registerTool(tool);
-		registeredImageToolNames.add(tool.name);
+	const registration: ImageToolsRegistration = {
+		generateImage: "skipped-server",
+		editImage: "skipped-server",
+		uploadImage: "skipped-server",
+	};
+
+	// Idempotent per-tool registration (roborev job 1636): session_start
+	// re-fires on resume/fork/reload, so an already-registered name is
+	// re-activated, never re-registered (pi replaces same-extension tools on
+	// re-register and other hosts may reject duplicates outright); each tool
+	// registers independently, and one failure neither blocks the others nor
+	// inflates the reported outcome.
+	const ensureActive = (name: string): void => {
 		// Tools registered after startup are refreshed immediately, but the
 		// active set does not change on its own — merge ours in explicitly.
 		const active = pi.getActiveTools();
-		if (!active.includes(tool.name)) {
-			pi.setActiveTools([...new Set([...active, tool.name])]);
+		if (!active.includes(name)) {
+			pi.setActiveTools([...new Set([...active, name])]);
 		}
 	};
-
-	try {
-		if (generateDescriptor) {
-			register(
-				buildGenerateImageTool({
-					client,
-					mcpToolName: "generate_image",
-					env: deps.env,
-					fetchImpl: deps.fetchImpl,
-					modelEnum: extractModelEnum(generateDescriptor.inputSchema),
-				}),
-			);
+	const offerings: [keyof Pick<ImageToolsRegistration, "generateImage" | "editImage" | "uploadImage">, string, () => unknown][] = [
+		["generateImage", "generate_image", () =>
+			buildGenerateImageTool({
+				client,
+				mcpToolName: "generate_image",
+				env: deps.env,
+				fetchImpl: deps.fetchImpl,
+				modelEnum: extractModelEnum(generateDescriptor?.inputSchema),
+			})],
+		["editImage", "edit_image", () =>
+			buildEditImageTool({
+				client,
+				mcpToolName: "edit_image",
+				env: deps.env,
+				fetchImpl: deps.fetchImpl,
+				modelEnum: extractModelEnum(editDescriptor?.inputSchema),
+			})],
+		["uploadImage", "upload_image", () =>
+			buildUploadImageTool({ client, mcpToolName: "upload_image", env: deps.env, fetchImpl: deps.fetchImpl })],
+	];
+	for (const [key, name, build] of offerings) {
+		if (!byName.has(name)) continue;
+		if (registeredImageToolNames.has(name)) {
+			ensureActive(name);
+			registration[key] = "registered";
+			continue;
 		}
-		if (editDescriptor) {
-			register(
-				buildEditImageTool({
-					client,
-					mcpToolName: "edit_image",
-					env: deps.env,
-					fetchImpl: deps.fetchImpl,
-					modelEnum: extractModelEnum(editDescriptor.inputSchema),
-				}),
-			);
+		try {
+			pi.registerTool(build() as never);
+			registeredImageToolNames.add(name);
+			ensureActive(name);
+			registration[key] = "registered";
+		} catch (err) {
+			registration[key] = "register-failed";
+			registration.error ??= err instanceof Error ? err.message : String(err);
 		}
-		if (uploadDescriptor) {
-			register(buildUploadImageTool({ client, mcpToolName: "upload_image", env: deps.env, fetchImpl: deps.fetchImpl }));
-		}
-	} catch (err) {
-		return {
-			generateImage: generateDescriptor ? "registered" : "skipped-server",
-			editImage: editDescriptor ? "registered" : "skipped-server",
-			uploadImage: uploadDescriptor ? "registered" : "skipped-server",
-			error: err instanceof Error ? err.message : String(err),
-		};
 	}
 
-	return {
-		generateImage: generateDescriptor ? "registered" : "skipped-server",
-		editImage: editDescriptor ? "registered" : "skipped-server",
-		uploadImage: uploadDescriptor ? "registered" : "skipped-server",
-	};
+	return registration;
 }

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
+	_resetImageToolsState,
 	parseImageResultText,
 	parseUploadResultText,
 	resolveImageDir,
@@ -309,7 +310,7 @@ function fakePi() {
 	const registered: ToolDefinition<never, never>[] = [];
 	let active: string[] = ["read", "bash"];
 	const pi = {
-		registerTool: (tool: ToolDefinition<never, never>) => registered.push(tool),
+		registerTool: vi.fn((tool: ToolDefinition<never, never>) => registered.push(tool)),
 		getActiveTools: () => [...active],
 		setActiveTools: (names: string[]) => {
 			active = [...names];
@@ -337,6 +338,7 @@ const IMAGE_TOOLS_LIST = {
 describe("registerImageTools", () => {
 	beforeEach(() => {
 		vi.unstubAllEnvs();
+		_resetImageToolsState();
 	});
 
 	test("registers all three offered tools, bakes the model enums, merges the active set", async () => {
@@ -402,5 +404,54 @@ describe("registerImageTools", () => {
 		const generate = registered.find((t) => t.name === "generate_image");
 		const model = (generate?.parameters as unknown as { properties: { model: { type: string } } }).properties.model;
 		expect(model.type).toBe("string");
+	});
+});
+
+describe("registerImageTools idempotency (roborev job 1636)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetImageToolsState();
+	});
+
+	test("a second session_start re-entry does not re-register: tools stay ours, active set intact", async () => {
+		const { pi, registered, activeRef } = fakePi();
+		const fetchImpl = mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []);
+		const first = await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl });
+		expect(first.generateImage).toBe("registered");
+		expect(pi.registerTool).toHaveBeenCalledTimes(3);
+		const second = await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl });
+		expect(second).toMatchObject({ generateImage: "registered", editImage: "registered", uploadImage: "registered" });
+		// No duplicate registrations — still exactly 3.
+		expect(pi.registerTool).toHaveBeenCalledTimes(3);
+		expect(registered).toHaveLength(3);
+		expect(activeRef()).toEqual(expect.arrayContaining(["generate_image", "edit_image", "upload_image"]));
+	});
+
+	test("re-entry re-activates ours when they were deactivated mid-session", async () => {
+		const { pi, activeRef } = fakePi();
+		const fetchImpl = mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []);
+		await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl });
+		pi.setActiveTools(pi.getActiveTools().filter((n) => n !== "generate_image"));
+		expect(activeRef()).not.toContain("generate_image");
+		await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl });
+		expect(activeRef()).toContain("generate_image");
+		expect(pi.registerTool).toHaveBeenCalledTimes(3);
+	});
+
+	test("a throwing registration does not block the other tools; outcomes stay honest", async () => {
+		const { pi, registered } = fakePi();
+		const realRegister = pi.registerTool as unknown as (tool: { name: string }) => void;
+		let calls = 0;
+		(pi as unknown as { registerTool: (tool: { name: string }) => void }).registerTool = (tool) => {
+			calls += 1;
+			if (tool.name === "generate_image") throw new Error("boom");
+			realRegister(tool);
+		};
+		const fetchImpl = mcpFetch({ "tools/list": () => IMAGE_TOOLS_LIST }, []);
+		const registration = await registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl });
+		expect(calls).toBe(3); // every tool attempted
+		expect(registration).toMatchObject({ generateImage: "register-failed", editImage: "registered", uploadImage: "registered" });
+		expect(registration.error).toContain("boom");
+		expect(registered.map((t) => t.name).sort()).toEqual(["edit_image", "upload_image"]);
 	});
 });
