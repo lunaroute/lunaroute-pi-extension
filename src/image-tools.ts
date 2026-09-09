@@ -313,7 +313,7 @@ export function buildGenerateImageTool(deps: ImageToolBuildDeps) {
 				{ ...params, embed: true },
 				signal,
 			);
-			return await finishImageCall(call, deps, onUpdate);
+			return await finishImageCall(call, deps, onUpdate, signal);
 		},
 		renderCall(args, theme, context) {
 			const label = theme.fg("toolTitle", theme.bold("generate_image"));
@@ -358,7 +358,7 @@ export function buildEditImageTool(deps: ImageToolBuildDeps) {
 				{ ...params, embed: true },
 				signal,
 			);
-			return await finishImageCall(call, deps, onUpdate);
+			return await finishImageCall(call, deps, onUpdate, signal);
 		},
 		renderCall(args, theme, context) {
 			const label = theme.fg("toolTitle", theme.bold("edit_image"));
@@ -381,6 +381,7 @@ async function finishImageCall(
 	call: { content?: { type: string; text?: string; data?: string }[] },
 	deps: ImageToolBuildDeps,
 	onUpdate?: (update: { content: { type: "text"; text: string }[]; details: ImageToolDetails }) => void,
+	signal?: AbortSignal,
 ): Promise<{ content: { type: "text"; text: string }[]; details: ImageToolDetails }> {
 	const text = textParts(call);
 	const parsed = parseImageResultText(text);
@@ -389,7 +390,7 @@ async function finishImageCall(
 	if (inline?.data) bytes = Buffer.from(inline.data, "base64");
 	else if (parsed.url) {
 		onUpdate?.({ content: [{ type: "text", text: "Downloading the generated image…" }], details: {} });
-		bytes = await fetchImageBytes(parsed.url, deps.fetchImpl ?? (fetch as FetchLike)).catch(() => undefined);
+		bytes = await fetchImageBytes(parsed.url, deps.fetchImpl ?? (fetch as FetchLike), signal).catch(() => undefined);
 	}
 	let path: string | undefined;
 	if (bytes && parsed.id) {
@@ -490,6 +491,18 @@ export function buildUploadImageTool(deps: ImageToolBuildDeps) {
 				}
 				args = { data: Buffer.from(data).toString("base64"), mime_type: sniffed };
 			} else if (params.url) {
+				// The server's SSRF-safe fetch rejects non-http(s) schemes too,
+				// but fail fast locally — the documented contract is http(s)
+				// (roborev job 1656).
+				let parsed: URL;
+				try {
+					parsed = new URL(params.url);
+				} catch {
+					throw new Error(`"${params.url}" is not a valid URL`);
+				}
+				if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+					throw new Error(`upload_image urls must be http(s), got ${parsed.protocol}//`);
+				}
 				args = { url: params.url };
 			} else {
 				throw new Error("exactly one of path or url is required");

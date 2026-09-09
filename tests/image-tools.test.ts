@@ -732,3 +732,28 @@ describe("foreign same-named tools + upload TOCTOU (roborev job 1651)", () => {
 		expect(client.callTool).not.toHaveBeenCalled();
 	});
 });
+
+describe("upload url scheme validation + download abort (roborev job 1656)", () => {
+	test("non-http(s) upload urls are rejected locally before the MCP call", async () => {
+		const client = fakeClient([{ type: "text", text: UPLOADED_TEXT }]);
+		const tool = buildUploadImageTool({ client, mcpToolName: "upload_image", env: process.env, io: memoryIo() });
+		for (const bad of ["file:///etc/passwd", "data:image/png;base64,AAAA", "ftp://example.com/cat.png", "not a url"]) {
+			await expect(tool.execute("t1", { url: bad } as never, AC(), undefined, {} as never)).rejects.toThrow(/http\(s\)|valid URL/i);
+		}
+		expect(client.callTool).not.toHaveBeenCalled();
+	});
+
+	test("the signed-url download receives the execution abort signal", async () => {
+		const client = fakeClient([{ type: "text", text: GENERATED_TEXT }]); // embed dropped → URL fetch
+		let seenSignal: AbortSignal | undefined;
+		const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+			seenSignal = init?.signal ?? undefined;
+			return new Response("bytes", { status: 200 });
+		});
+		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
+		const tool = buildGenerateImageTool({ client, mcpToolName: "generate_image", env: process.env, io: memoryIo(), fetchImpl });
+		const controller = new AbortController();
+		await tool.execute("t1", { prompt: "p", model: "m" } as never, controller.signal, undefined, {} as never);
+		expect(seenSignal).toBe(controller.signal);
+	});
+});
