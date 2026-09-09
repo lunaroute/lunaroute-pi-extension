@@ -11,7 +11,7 @@ import {
 	registerLunarouteMcp,
 } from "./mcp.js";
 import { readSettings, settingsPath, writeSettings, type LunarouteSettings } from "./settings.js";
-import { getRegisteredImageToolNames, registerImageTools } from "./image-tools.js";
+import { getRegisteredImageToolNames, invalidateImageToolRegistrations, registerImageTools } from "./image-tools.js";
 import { getRegisteredWebToolNames, registerWebTools } from "./web-tools.js";
 
 /** The `/lunaroute` settings command (kata bjy9): a pi-native SettingsList
@@ -263,6 +263,9 @@ async function applyImageTools(
 		if (ours.size > 0) {
 			pi.setActiveTools(pi.getActiveTools().filter((name) => !ours.has(name)));
 		}
+		// An in-flight registration (catalog fetch still resolving) must not
+		// land after this off-toggle and reactivate anything.
+		invalidateImageToolRegistrations();
 		ui.notify("LunaRoute image tools disabled", "info");
 		return;
 	}

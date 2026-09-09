@@ -643,3 +643,56 @@ describe("client swap ordering + superseded registrations (roborev job 1646)", (
 		expect(activeRef()).toContain("upload_image");
 	});
 });
+
+describe("server-id validation + disable-during-discovery (roborev job 1649)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetImageToolsState();
+	});
+
+	test("a server-provided id with path segments never escapes the images dir", async () => {
+		const evil = GENERATED_TEXT.replace(
+			"id: img_01JD2W3Q4R5T6Y7U8I9O0P1A2B",
+			"id: ../../../home/u/.bashrc",
+		);
+		const client = fakeClient([
+			{ type: "text", text: evil },
+			{ type: "image", data: Buffer.from("pngbytes").toString("base64"), mimeType: "image/png" },
+		]);
+		const io = memoryIo();
+		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
+		const tool = buildGenerateImageTool({ client, mcpToolName: "generate_image", env: process.env, io });
+		const result = await tool.execute("t1", { prompt: "p", model: "m" } as never, AC(), undefined, {} as never);
+		expect(io.files.size).toBe(0); // nothing written anywhere
+		expect((result.content[0] as { text?: string }).text).toContain("not saved locally");
+	});
+
+	test("toggling the setting off while discovery is in flight supersedes the registration", async () => {
+		const { pi, activeRef } = fakePi();
+		let resolveA: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			resolveA = resolve;
+		});
+		const deferredFetch = async (_url: string, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body)) as { id: number; method: string };
+			if (body.method === "tools/list") {
+				await gate;
+				return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: IMAGE_TOOLS_LIST }), { status: 200, headers: { "content-type": "application/json" } });
+			}
+			return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }), { status: 200, headers: { "content-type": "application/json" } });
+		};
+		const a = registerImageTools(pi, { key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: deferredFetch as never });
+		await Promise.resolve();
+		// The user disables image tools while the catalog fetch is in flight.
+		const off = await registerImageTools(pi, {
+			key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: deferredFetch as never,
+			settings: { mcp: "on", webTools: "on", searchProvider: "server", imageTools: "off" },
+		});
+		expect(off.generateImage).toBe("skipped-disabled");
+		resolveA();
+		const outcome = await a;
+		expect(outcome.generateImage).toBe("skipped-server");
+		expect(outcome.error).toContain("superseded");
+		expect(activeRef()).not.toContain("generate_image");
+	});
+});

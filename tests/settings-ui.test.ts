@@ -505,3 +505,51 @@ describe("imageTools on-toggle revalidation (roborev job 1643)", () => {
 		}
 	});
 });
+
+describe("imageTools off during discovery supersedes (roborev job 1649)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetImageToolsState();
+	});
+
+	test("applier off while a registration is in flight: tools never activate", async () => {
+		const { pi, getActive } = fakePi();
+		let resolveA: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			resolveA = resolve;
+		});
+		let listStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			listStarted = resolve;
+		});
+		const deferredFetch = async (_url: string, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body)) as { id: number; method: string };
+			if (body.method === "tools/list") {
+				listStarted(); // the fetch is attached and parked — deterministic
+				await gate;
+				return new Response(
+					JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "generate_image" }, { name: "upload_image" }] } }),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }), { status: 200, headers: { "content-type": "application/json" } });
+		};
+		vi.stubGlobal("fetch", deferredFetch);
+		const ui = { notify: vi.fn() };
+		const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", DEFAULT_SETTINGS);
+		// The on-toggle starts a registration whose catalog fetch parks…
+		const on = applier("imageTools", "on");
+		await started;
+		// …and the user flips it off before the catalog resolves.
+		await applier("imageTools", "off");
+		resolveA();
+		await on;
+		try {
+			expect(getActive()).not.toContain("generate_image");
+			expect(getActive()).not.toContain("upload_image");
+			expect(getActive()).toEqual(expect.arrayContaining(["read", "bash"]));
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});

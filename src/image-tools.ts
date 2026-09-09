@@ -247,13 +247,19 @@ async function fetchImageBytes(url: string, fetchImpl: FetchLike, signal?: Abort
 	return Buffer.from(await res.arrayBuffer());
 }
 
+/** LunaRoute image ids are `img_` + ULID (upload design §2). Anything else —
+ * especially path segments — is untrusted server input and must not reach a
+ * filesystem path (roborev job 1649). */
+const IMAGE_ID_PATTERN = /^img_[0-9A-Za-z]+$/;
+
 async function saveImage(
 	dir: string,
 	id: string,
 	format: string,
 	bytes: Uint8Array,
 	io: ImageIo,
-): Promise<string> {
+): Promise<string | undefined> {
+	if (!IMAGE_ID_PATTERN.test(id)) return undefined;
 	const path = join(dir, `${id}${extForFormat(format)}`);
 	await io.mkdir(dir, { recursive: true });
 	await io.writeFile(path, bytes);
@@ -568,6 +574,13 @@ export function getRegisteredImageToolNames(): ReadonlySet<string> {
 	return registeredImageToolNames;
 }
 
+/** Invalidate any in-flight image-tool registration (the user just disabled
+ * the tools) — a catalog fetch resolving later must not register or
+ * reactivate anything (roborev job 1649). */
+export function invalidateImageToolRegistrations(): void {
+	registrationGeneration++;
+}
+
 /** Test-only: reset module-scoped state. */
 export function _resetImageToolsState(): void {
 	registeredImageToolNames.clear();
@@ -606,6 +619,10 @@ export async function registerImageTools(
 ): Promise<ImageToolsRegistration> {
 	const settings = deps.settings ?? DEFAULT_SETTINGS;
 	if (!imageToolsEnabled(deps.env, settings)) {
+		// A disable supersedes any in-flight registration: its catalog fetch
+		// may resolve after this and must not register/reactivate anything
+		// (roborev job 1649).
+		registrationGeneration++;
 		return { generateImage: "skipped-disabled", editImage: "skipped-disabled", uploadImage: "skipped-disabled" };
 	}
 
