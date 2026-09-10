@@ -1,0 +1,896 @@
+import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import type { ExtensionAPI, ThemeColor, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import { Type, type TSchema } from "typebox";
+import { agentDirFromEnv, buildAttributionHeaders, resolveMcpUrl } from "./lunaroute.js";
+import { createLunarouteMcpClient, type FetchLike, type LunarouteMcpClient } from "./web-tools.js";
+import { DEFAULT_SETTINGS, imageToolsEnabled, type LunarouteSettings } from "./settings.js";
+
+// First-class image tools (kata e30g): generate_image / edit_image /
+// upload_image, backed by the hosted LunaRoute MCP server — the same pattern
+// as the web tools (kata akyg), minus local presence detection: these names
+// are LunaRoute-specific, and the server's tools/list already gates per-org
+// entitlement/policy. Generated/edited images are saved to a
+// per-installation folder so terminal users get the actual file.
+//
+// Server contract (verified 2026-09-09, lunaroute-hosted mcp.rs):
+// - generate_image: prompt+model required; optional size/steps/guidance/
+//   negative_prompt/seed/output_format; `embed: true` adds an inline
+//   {"type":"image","data":<b64>,"mimeType":...} content part (dropped, with
+//   a "too large to embed" note, over MCP_EMBED_MAX_BYTES — 8 MiB default).
+// - edit_image: the same args + image_ids (img_… ids only).
+// - upload_image: data (base64) XOR url; returns id + dims + MiB + url.
+// - Results are LINE-BASED text (not JSON):
+//     Generated|Edited into WxH fmt with model (seed N, M steps)
+//     id: img_…
+//     from: parent ids            (edits only)
+//     url: … (link expires …)     (or "url: (temporarily unavailable — …)")
+//     image expires: …
+//     uploaded img_… (WxH fmt, N MiB)   (upload)
+
+export const LUNAROUTE_ENV_IMAGE_DIR = "LUNAROUTE_IMAGE_DIR";
+/** Mirrors the server's IMAGE_UPLOAD_MAX_BYTES default (11 MiB) — a
+ * fail-fast guard before base64-inflating a file into JSON-RPC. The server
+ * stays authoritative; deployments can configure it higher. */
+export const UPLOAD_MAX_BYTES = 11 * 1024 * 1024;
+
+// ============================================================================
+// Result parsing (line-based server text → structured)
+// ============================================================================
+
+export interface ImageResult {
+	verb: string;
+	width: number;
+	height: number;
+	format: string;
+	model: string;
+	seed?: number;
+	steps?: number;
+	id: string;
+	from?: string[];
+	url?: string;
+	urlExpires?: string;
+	imageExpires?: string;
+	/** Set when the text did not match the expected shape. */
+	rawText?: string;
+}
+
+const UNAVAILABLE_URL = "url: (temporarily unavailable";
+
+/** Parse the generate/edit result text. Tolerant: a parse failure keeps the
+ * raw text so the model still sees what the server sent (web-tools
+ * pattern). */
+export function parseImageResultText(text: string): ImageResult {
+	const lines = text.split("\n");
+	const first = lines[0] ?? "";
+	const head = /^(Generated|Edited into) (\d+)x(\d+) (\S+) with (.+)$/.exec(first);
+	const idLine = lines.find((l) => l.startsWith("id: "));
+	if (!head || !idLine) {
+		return { verb: "", width: 0, height: 0, format: "", model: "", id: "", rawText: text };
+	}
+	let model = head[5];
+	const detail = /\s*\(([^)]*)\)\s*$/.exec(model);
+	let seed: number | undefined;
+	let steps: number | undefined;
+	if (detail) {
+		model = model.slice(0, detail.index).trimEnd();
+		const seedMatch = /seed (\d+)/.exec(detail[1]);
+		const stepsMatch = /(\d+) steps/.exec(detail[1]);
+		if (seedMatch) seed = Number(seedMatch[1]);
+		if (stepsMatch) steps = Number(stepsMatch[1]);
+	}
+	const result: ImageResult = {
+		verb: head[1],
+		width: Number(head[2]),
+		height: Number(head[3]),
+		format: head[4] === "" ? "" : head[4],
+		model,
+		seed,
+		steps,
+		id: idLine.slice(4).trim(),
+	};
+	const fromLine = lines.find((l) => l.startsWith("from: "));
+	if (fromLine) {
+		result.from = fromLine
+			.slice(6)
+			.split(",")
+			.map((s) => s.trim())
+			.filter(Boolean);
+	}
+	const urlLine = lines.find((l) => l.startsWith("url: "));
+	if (urlLine && !urlLine.startsWith(UNAVAILABLE_URL)) {
+		result.url = urlLine.slice(5).replace(/\s*\(link expires [^)]*\)\s*$/, "").trim();
+		const expires = /\(link expires ([^)]*)\)/.exec(urlLine);
+		if (expires) result.urlExpires = expires[1];
+	}
+	const imageExpires = lines.find((l) => l.startsWith("image expires: "));
+	if (imageExpires) result.imageExpires = imageExpires.slice("image expires: ".length).trim();
+	return result;
+}
+
+export interface UploadResult {
+	id: string;
+	width: number;
+	height: number;
+	format: string;
+	mib: number;
+	url?: string;
+	urlExpires?: string;
+	rawText?: string;
+}
+
+/** Parse the upload result text (`uploaded img_… (WxH fmt, N MiB)` + url). */
+export function parseUploadResultText(text: string): UploadResult {
+	const lines = text.split("\n");
+	const head = /^uploaded (\S+) \((\d+)x(\d+) (\S+), ([0-9.]+) MiB\)$/.exec(lines[0] ?? "");
+	if (!head) {
+		return { id: "", width: 0, height: 0, format: "", mib: 0, rawText: text };
+	}
+	const result: UploadResult = {
+		id: head[1],
+		width: Number(head[2]),
+		height: Number(head[3]),
+		format: head[4],
+		mib: Number(head[5]),
+	};
+	const urlLine = lines.find((l) => l.startsWith("url: "));
+	if (urlLine && !urlLine.startsWith(UNAVAILABLE_URL)) {
+		result.url = urlLine.slice(5).replace(/\s*\(link expires [^)]*\)\s*$/, "").trim();
+		const expires = /\(link expires ([^)]*)\)/.exec(urlLine);
+		if (expires) result.urlExpires = expires[1];
+	}
+	return result;
+}
+
+// ============================================================================
+// Images dir (kata e30g: central, per pi installation)
+// ============================================================================
+
+/** Per-installation images folder: LUNAROUTE_IMAGE_DIR (absolute) wins, else
+ * <agentDir>/lunaroute-images (same anchor as lunaroute.json — the
+ * PI_CODING_AGENT_DIR → ~/.pi/agent resolution). */
+export function resolveImageDir(env: NodeJS.ProcessEnv): string {
+	const override = env[LUNAROUTE_ENV_IMAGE_DIR];
+	if (typeof override === "string" && override) return override;
+	return join(agentDirFromEnv(env), "lunaroute-images");
+}
+
+/** Sniff the image codec from magic bytes (roborev job 1646): the server
+ * sniffs too, but the bytes must not LEAVE the machine before that check —
+ * a path argument pointing at credentials must fail locally. */
+export function sniffImageMime(bytes: Uint8Array): "image/png" | "image/jpeg" | "image/webp" | undefined {
+	if (
+		bytes.length >= 8 &&
+		bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 &&
+		bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a
+	) {
+		return "image/png";
+	}
+	if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+		return "image/jpeg";
+	}
+	if (
+		bytes.length >= 12 &&
+		bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+		bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+	) {
+		return "image/webp";
+	}
+	return undefined;
+}
+
+function extForFormat(format: string): string {
+	if (format === "jpeg") return ".jpg";
+	if (format === "png" || format === "webp") return `.${format}`;
+	return ".png";
+}
+
+// ============================================================================
+// Tool builders
+// ============================================================================
+
+export interface ImageToolDetails {
+	id?: string;
+	path?: string;
+	url?: string;
+	width?: number;
+	height?: number;
+	format?: string;
+	model?: string;
+	seed?: number;
+	steps?: number;
+	from?: string[];
+	mib?: number;
+	bytes?: number;
+	error?: string;
+}
+
+export interface ImageIo {
+	mkdir(path: string, options: { recursive: boolean }): Promise<void>;
+	writeFile(path: string, data: Uint8Array): Promise<void>;
+	/** Atomic rename (same-filesystem) for the temp-then-rename save. */
+	rename(from: string, to: string): Promise<void>;
+	/** Best-effort removal (temp cleanup). */
+	rm(path: string): Promise<void>;
+	/** Read at most maxBytes from the start of the file. The bound is
+	 * load-bearing: a path swapped for a huge file between checks must never
+	 * be fully loaded (roborev job 1659). */
+	readFileBounded(path: string, maxBytes: number): Promise<Uint8Array>;
+}
+
+/** Collect bytes via repeated positional reads until EOF or maxBytes.
+ * FileHandle.read may short-read before EOF (roborev job 1663) — a single
+ * read could truncate an oversize file into something that passes the size
+ * check, so the loop keeps reading until the file ends or the bound is hit.
+ * The buffer stays one fixed maxBytes allocation. */
+export async function readUntilLimit(
+	readOnce: (buffer: Uint8Array, offset: number, length: number, position: number) => Promise<number>,
+	maxBytes: number,
+): Promise<Uint8Array> {
+	const buffer = Buffer.alloc(maxBytes);
+	let total = 0;
+	while (total < maxBytes) {
+		const bytesRead = await readOnce(buffer, total, maxBytes - total, total);
+		if (bytesRead === 0) break; // EOF
+		total += bytesRead;
+	}
+	return buffer.subarray(0, total);
+}
+
+const defaultIo: ImageIo = {
+	// fs mkdir returns Promise<string | undefined>; the interface promises void.
+	mkdir: async (path, options) => {
+		await mkdir(path, options);
+	},
+	writeFile,
+	rename,
+	rm,
+	// Descriptor-based bounded read: one open, positional reads capped at
+	// maxBytes — the file's true size never dictates memory use.
+	readFileBounded: async (path, maxBytes) => {
+		const handle = await open(path, "r");
+		try {
+			return await readUntilLimit(
+				(buffer, offset, length, position) =>
+					handle.read(buffer, offset, length, position).then((r) => r.bytesRead),
+				maxBytes,
+			);
+		} finally {
+			await handle.close();
+		}
+	},
+};
+
+type ThemeLike = {
+	fg: (color: ThemeColor, text: string) => string;
+	bold: (text: string) => string;
+};
+
+const truncateText = (s: string, n: number) => (s.length <= n ? s : s.slice(0, n - 1) + "…");
+
+/** Build the `model` parameter: the per-org enum + limit hints from the
+ * server's tools/list when available, else a plain string. */
+function modelParam(enumInfo: { enum: string[]; description?: string } | undefined) {
+	if (enumInfo && enumInfo.enum.length > 0) {
+		return Type.Union(enumInfo.enum.map((m) => Type.Literal(m)), {
+			description: enumInfo.description ?? "Which image model to use.",
+		});
+	}
+	return Type.String({ description: "Image model id, as offered by LunaRoute." });
+}
+
+/** Cap for the signed-URL image download: generous headroom over the
+ * server's image ceilings (IMAGE_MAX_BYTES default 8 MiB, deployment-
+ * configurable) while still bounding what a malformed or hostile storage
+ * response can put in memory (roborev job 1672). */
+export const DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024;
+
+export async function fetchImageBytes(
+	url: string,
+	fetchImpl: FetchLike,
+	signal?: AbortSignal,
+	maxBytes: number = DOWNLOAD_MAX_BYTES,
+): Promise<Uint8Array | undefined> {
+	const res = await fetchImpl(url, { signal });
+	if (!res.ok) return undefined;
+	// Reject an honest oversized declaration up front…
+	const declared = Number(res.headers.get("content-length"));
+	if (Number.isFinite(declared) && declared > maxBytes) return undefined;
+	// …and bound the actual bytes too: a lying or absent Content-Length must
+	// not translate into an unbounded buffer.
+	// No readable body (null-body responses — 204/304, Response(null)) means
+	// there is nothing to save; there is deliberately NO arrayBuffer fallback:
+	// it would buffer unbounded before the cap check (roborev job 1696).
+	const reader = res.body?.getReader();
+	if (!reader) return undefined;
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (total > maxBytes) {
+			await reader.cancel().catch(() => {});
+			return undefined;
+		}
+		chunks.push(value);
+	}
+	return Buffer.concat(chunks);
+}
+
+/** LunaRoute image ids are `img_` + ULID (upload design §2). Anything else —
+ * especially path segments — is untrusted server input and must not reach a
+ * filesystem path (roborev job 1649). */
+const IMAGE_ID_PATTERN = /^img_[0-9A-Za-z]+$/;
+
+async function saveImage(
+	dir: string,
+	id: string,
+	format: string,
+	bytes: Uint8Array,
+	io: ImageIo,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	if (!IMAGE_ID_PATTERN.test(id)) return undefined;
+	if (signal?.aborted) return undefined;
+	// Temp-then-rename (roborev job 1665): an abort landing mid-write (or a
+	// failed write) must leave neither a partial nor a leftover file — the
+	// final path only ever appears whole, via an atomic rename.
+	const path = join(dir, `${id}${extForFormat(format)}`);
+	const tmp = `${path}.${randomUUID()}.tmp`;
+	try {
+		await io.mkdir(dir, { recursive: true });
+		// Re-check before the write: an abort landing between the download
+		// resolving and this point must not leave a file behind (roborev job
+		// 1661).
+		if (signal?.aborted) return undefined;
+		await io.writeFile(tmp, bytes);
+		if (signal?.aborted) {
+			await io.rm(tmp).catch(() => {});
+			return undefined;
+		}
+		await io.rename(tmp, path);
+		// The last window (roborev job 1667): an abort landing during the
+		// rename must not leave the completed file behind either — a
+		// cancelled call has no side effects, matching the not-saved note.
+		if (signal?.aborted) {
+			await io.rm(path).catch(() => {});
+			return undefined;
+		}
+		return path;
+	} catch {
+		await io.rm(tmp).catch(() => {});
+		return undefined;
+	}
+}
+
+function textParts(call: { content?: { type: string; text?: string }[] }): string {
+	return (call.content ?? []).filter((c) => c.type === "text").map((c) => c.text ?? "").join("\n");
+}
+
+function imagePart(call: { content?: { type: string; data?: string }[] }): { type: string; data?: string } | undefined {
+	return (call.content ?? []).find((c) => c.type === "image" && typeof c.data === "string");
+}
+
+export interface ImageToolBuildDeps {
+	client: LunarouteMcpClient;
+	mcpToolName: string;
+	env: NodeJS.ProcessEnv;
+	fetchImpl?: FetchLike;
+	io?: ImageIo;
+	/** Per-org model enum + hints from tools/list (kata e30g enum baking). */
+	modelEnum?: { enum: string[]; description?: string };
+}
+
+export function buildGenerateImageTool(deps: ImageToolBuildDeps) {
+	const parameters = Type.Object({
+		prompt: Type.String({ description: "What to generate" }),
+		model: modelParam(deps.modelEnum),
+		size: Type.Optional(Type.String({ description: "WIDTHxHEIGHT, e.g. 1024x1024. Defaults to the model's default size." })),
+		steps: Type.Optional(Type.Number({ description: "Denoising steps. Defaults to the model's default; must be in the model's range." })),
+		guidance: Type.Optional(Type.Number({ description: "Prompt adherence. Defaults to the model's default; must be in the model's range." })),
+		negative_prompt: Type.Optional(Type.String({ description: "What to avoid. Only for models that support it." })),
+		seed: Type.Optional(Type.Number({ minimum: 0, description: "Seed for a reproducible generation. Omit for a random one." })),
+		output_format: Type.Optional(Type.String({ description: "One of the model's formats listed under model." })),
+	});
+	const tool: ToolDefinition<typeof parameters, ImageToolDetails> = {
+		name: "generate_image",
+		label: "Generate Image",
+		description:
+			"Generate an image from a text prompt via LunaRoute. Returns the image id, a time-limited URL, and the local path where the image was saved. Pass the id to edit_image to modify it later.",
+		promptSnippet: "Generate images via LunaRoute",
+		promptGuidelines: [
+			"Use generate_image for image creation; report the saved local path to the user.",
+			"To modify an image, pass its img_ id to edit_image (upload local files with upload_image first).",
+		],
+		parameters,
+		async execute(_toolCallId, params, signal, onUpdate) {
+			onUpdate?.({ content: [{ type: "text", text: "Generating image via LunaRoute…" }], details: {} });
+			const call = await deps.client.callTool(
+				deps.mcpToolName,
+				{ ...params, embed: true },
+				signal,
+			);
+			return await finishImageCall(call, deps, onUpdate, signal);
+		},
+		renderCall(args, theme, context) {
+			const label = theme.fg("toolTitle", theme.bold("generate_image"));
+			let out = `${label} ${theme.fg("dim", truncateText(`"${args.prompt ?? ""}"`, 64))}`;
+			if (typeof args.model === "string") out += theme.fg("dim", ` (${args.model})`);
+			if (context.isPartial) out += `  ${theme.fg("warning", "⠸ generating…")}`;
+			return new Text(out, 0, 0);
+		},
+		renderResult(result, options, theme) {
+			return renderImageResult(result, options, theme);
+		},
+	};
+	return tool;
+}
+
+export function buildEditImageTool(deps: ImageToolBuildDeps) {
+	const parameters = Type.Object({
+		prompt: Type.String({ description: "What to change" }),
+		model: modelParam(deps.modelEnum),
+		image_ids: Type.Array(Type.String(), { minItems: 1, description: "Prior LunaRoute image ids to edit (img_…)" }),
+		size: Type.Optional(Type.String({ description: "WIDTHxHEIGHT for the result" })),
+		steps: Type.Optional(Type.Number({ description: "Denoising steps" })),
+		guidance: Type.Optional(Type.Number({ description: "Prompt adherence" })),
+		negative_prompt: Type.Optional(Type.String({ description: "What to avoid (models that support it)" })),
+		seed: Type.Optional(Type.Number({ minimum: 0, description: "Seed for a reproducible edit" })),
+		output_format: Type.Optional(Type.String({ description: "One of the model's formats" })),
+	});
+	const tool: ToolDefinition<typeof parameters, ImageToolDetails> = {
+		name: "edit_image",
+		label: "Edit Image",
+		description:
+			"Edit prior images by their LunaRoute image id — the id returned by generate_image, a prior edit, or upload_image. Returns a new image id, URL, and the local path where it was saved.",
+		promptSnippet: "Edit LunaRoute images by id",
+		promptGuidelines: [
+			"Use edit_image with img_ ids from generate_image/upload_image; pass uploaded files through upload_image first.",
+		],
+		parameters,
+		async execute(_toolCallId, params, signal, onUpdate) {
+			onUpdate?.({ content: [{ type: "text", text: "Editing image via LunaRoute…" }], details: {} });
+			const call = await deps.client.callTool(
+				deps.mcpToolName,
+				{ ...params, embed: true },
+				signal,
+			);
+			return await finishImageCall(call, deps, onUpdate, signal);
+		},
+		renderCall(args, theme, context) {
+			const label = theme.fg("toolTitle", theme.bold("edit_image"));
+			const ids = Array.isArray(args.image_ids) ? args.image_ids.join(", ") : "";
+			let out = `${label} ${theme.fg("dim", truncateText(`"${args.prompt ?? ""}" (${ids})`, 72))}`;
+			if (context.isPartial) out += `  ${theme.fg("warning", "⠸ editing…")}`;
+			return new Text(out, 0, 0);
+		},
+		renderResult(result, options, theme) {
+			return renderImageResult(result, options, theme);
+		},
+	};
+	return tool;
+}
+
+/** Shared tail for generate/edit execute: parse, save (inline bytes, else the
+ * signed url), and shape the text + details. Never rewrites the server's own
+ * lines — only appends the local-path line. */
+async function finishImageCall(
+	call: { content?: { type: string; text?: string; data?: string }[]; isError?: boolean },
+	deps: ImageToolBuildDeps,
+	onUpdate?: (update: { content: { type: "text"; text: string }[]; details: ImageToolDetails }) => void,
+	signal?: AbortSignal,
+): Promise<{ content: { type: "text"; text: string }[]; details: ImageToolDetails }> {
+	// Our own client throws on isError, but the builder accepts any
+	// LunarouteMcpClient — a host-provided one may hand it back raw. An error
+	// result must fail the tool, not parse into "not saved locally" plus
+	// success-looking guidance (roborev job 1694).
+	if (call.isError) {
+		throw new Error(textParts(call) || `MCP tool ${deps.mcpToolName} returned an error`);
+	}
+	const text = textParts(call);
+	const parsed = parseImageResultText(text);
+	let bytes: Uint8Array | undefined;
+	const inline = imagePart(call);
+	if (inline?.data) bytes = Buffer.from(inline.data, "base64");
+	else if (parsed.url) {
+		onUpdate?.({ content: [{ type: "text", text: "Downloading the generated image…" }], details: {} });
+		bytes = await fetchImageBytes(parsed.url, deps.fetchImpl ?? (fetch as FetchLike), signal).catch(() => undefined);
+	}
+	let path: string | undefined;
+	if (bytes && parsed.id && !signal?.aborted) {
+		try {
+			path = await saveImage(resolveImageDir(deps.env), parsed.id, parsed.format, bytes, deps.io ?? defaultIo, signal);
+		} catch {
+			// Best-effort: the id + url still go out.
+		}
+	}
+	const outText = `${text}\n${path ? `saved to: ${path}` : "not saved locally — fetch the url before it expires"}`;
+	const details: ImageToolDetails = {
+		id: parsed.id || undefined,
+		path,
+		url: parsed.url,
+		width: parsed.width || undefined,
+		height: parsed.height || undefined,
+		format: parsed.format || undefined,
+		model: parsed.model || undefined,
+		seed: parsed.seed,
+		steps: parsed.steps,
+		from: parsed.from,
+		bytes: bytes?.byteLength,
+	};
+	return { content: [{ type: "text", text: outText }], details };
+}
+
+function renderImageResult(
+	result: { details?: unknown },
+	options: { isPartial: boolean; expanded: boolean },
+	theme: ThemeLike,
+): Text {
+	const details = (result.details ?? {}) as ImageToolDetails;
+	if (options.isPartial) {
+		return new Text(theme.fg("warning", "⠸ working…"), 0, 0);
+	}
+	if (details.error) {
+		return new Text(theme.fg("error", `✗ ${details.error}`), 0, 0);
+	}
+	if (!options.expanded) {
+		const dims = details.width && details.height ? `${details.width}x${details.height}` : "";
+		let line = `${theme.fg("success", "✓")} ${theme.fg("muted", [details.id, dims, details.format].filter(Boolean).join(" · "))}`;
+		if (details.mib !== undefined) line += theme.fg("muted", ` · ${details.mib} MiB`);
+		line += theme.fg("muted", details.path ? " · saved" : details.id ? " · url only" : "");
+		return new Text(line, 0, 0);
+	}
+	const lines = [
+		details.path ? theme.fg("accent", details.path) : theme.fg("muted", "not saved locally"),
+	];
+	if (details.model) lines.push(theme.fg("dim", `model: ${details.model}`));
+	if (details.seed !== undefined) lines.push(theme.fg("dim", `seed: ${details.seed}`));
+	if (details.from?.length) lines.push(theme.fg("dim", `from: ${details.from.join(", ")}`));
+	if (details.url) lines.push(theme.fg("dim", truncateText(details.url, 120)));
+	return new Text(lines.join("\n"), 0, 0);
+}
+
+export function buildUploadImageTool(deps: ImageToolBuildDeps) {
+	const parameters = Type.Object({
+		path: Type.Optional(Type.String({ description: "Local path of the image file (png, jpeg, or webp). Exactly one of path or url." })),
+		url: Type.Optional(Type.String({ description: "http(s) URL of the image to fetch server-side. Exactly one of path or url." })),
+	});
+	const tool: ToolDefinition<typeof parameters, ImageToolDetails> = {
+		name: "upload_image",
+		label: "Upload Image",
+		description:
+			"Upload an image you already have (a local file path, or an http(s) URL) to LunaRoute and get an img_… id. Pass that id to edit_image's image_ids to edit it.",
+		promptSnippet: "Upload local images to LunaRoute for editing",
+		promptGuidelines: [
+			"Use upload_image to turn a local image file into an img_ id before edit_image.",
+		],
+		parameters,
+		async execute(_toolCallId, params, signal, onUpdate) {
+			const io = deps.io ?? defaultIo;
+			let args: Record<string, unknown>;
+			if (params.path && params.url) {
+				throw new Error("exactly one of path or url is required, not both");
+			} else if (params.path) {
+				onUpdate?.({ content: [{ type: "text", text: `Reading ${params.path}…` }], details: {} });
+				// Bounded read (roborev jobs 1651 + 1659): at most the
+				// ceiling + 1 byte ever enters memory, whatever happens to
+				// the file between checks.
+				const data = await io.readFileBounded(params.path, UPLOAD_MAX_BYTES + 1);
+				if (data.byteLength > UPLOAD_MAX_BYTES) {
+					throw new Error(
+						`${params.path} exceeds the ${(UPLOAD_MAX_BYTES / (1024 * 1024)) | 0} MiB LunaRoute upload ceiling`,
+					);
+				}
+				const sniffed = sniffImageMime(data);
+				if (!sniffed) {
+					throw new Error(
+						`${params.path} is not a png, jpeg, or webp image (magic bytes not recognized) — refusing to upload it`,
+					);
+				}
+				args = { data: Buffer.from(data).toString("base64"), mime_type: sniffed };
+			} else if (params.url) {
+				// The server's SSRF-safe fetch rejects non-http(s) schemes too,
+				// but fail fast locally — the documented contract is http(s)
+				// (roborev job 1656).
+				let parsed: URL;
+				try {
+					parsed = new URL(params.url);
+				} catch {
+					throw new Error(`"${params.url}" is not a valid URL`);
+				}
+				if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+					throw new Error(`upload_image urls must be http(s), got ${parsed.protocol}//`);
+				}
+				args = { url: params.url };
+			} else {
+				throw new Error("exactly one of path or url is required");
+			}
+			onUpdate?.({ content: [{ type: "text", text: "Uploading image to LunaRoute…" }], details: {} });
+			const call = await deps.client.callTool(deps.mcpToolName, args, signal);
+			if (call.isError) {
+				// Same defense as finishImageCall (roborev job 1694): an error
+				// result fails the tool instead of gaining the edit hint.
+				throw new Error(textParts(call) || `MCP tool ${deps.mcpToolName} returned an error`);
+			}
+			const text = textParts(call);
+			const parsed = parseUploadResultText(text);
+			const details: ImageToolDetails = {
+				id: parsed.id || undefined,
+				url: parsed.url,
+				width: parsed.width || undefined,
+				height: parsed.height || undefined,
+				format: parsed.format || undefined,
+				mib: parsed.mib || undefined,
+			};
+			const outText = `${text}\npass this id to edit_image's image_ids to edit it.`;
+			return { content: [{ type: "text", text: outText }], details };
+		},
+		renderCall(args, theme, context) {
+			const label = theme.fg("toolTitle", theme.bold("upload_image"));
+			const what = args.path ?? args.url ?? "";
+			let out = `${label} ${theme.fg("dim", truncateText(String(what), 72))}`;
+			if (context.isPartial) out += `  ${theme.fg("warning", "⠸ uploading…")}`;
+			return new Text(out, 0, 0);
+		},
+		renderResult(result, options, theme) {
+			return renderImageResult(result, options, theme);
+		},
+	};
+	return tool;
+}
+
+// ============================================================================
+// Registration orchestrator
+// ============================================================================
+
+export type ImageToolOutcome = "registered" | "skipped-existing" | "skipped-server" | "skipped-disabled" | "register-failed";
+
+export interface ImageToolsRegistration {
+	generateImage: ImageToolOutcome;
+	editImage: ImageToolOutcome;
+	uploadImage: ImageToolOutcome;
+	error?: string;
+}
+
+export interface RegisterImageToolsDeps {
+	key: string;
+	env: NodeJS.ProcessEnv;
+	version: string;
+	sessionId: string;
+	fetchImpl?: FetchLike;
+	settings?: LunarouteSettings;
+}
+
+/** Extract the per-org `model` enum + hint description from a tools/list
+ * inputSchema (the server bakes per-model limits into the description). */
+export function extractModelEnum(inputSchema: unknown): { enum: string[]; description?: string } | undefined {
+	if (typeof inputSchema !== "object" || inputSchema === null) return undefined;
+	const properties = (inputSchema as { properties?: Record<string, unknown> }).properties;
+	const model = properties?.model;
+	if (typeof model !== "object" || model === null) return undefined;
+	const { enum: values, description } = model as { enum?: unknown; description?: unknown };
+	if (!Array.isArray(values) || values.length === 0) return undefined;
+	if (!values.every((v): v is string => typeof v === "string")) return undefined;
+	return {
+		enum: values,
+		description: typeof description === "string" ? description : undefined,
+	};
+}
+
+// Tools this process registered: the settings UI's live-apply touches only
+// these names (same rule as the web tools, kata bjy9).
+const registeredImageToolNames = new Set<string>();
+// The model enum each registered tool was built with, so a changed server
+// catalog re-registers the tool (fresh schema) instead of serving a stale one.
+const registeredModelEnums = new Map<string, { enum: string[]; description?: string } | undefined>();
+// The one client every registered image tool talks through;
+// registerImageTools swaps it on re-entry, so a rotated key (re-login)
+// reaches already-registered tools without touching their registrations
+// (roborev job 1640).
+const currentClient: { client?: LunarouteMcpClient } = {};
+// Monotonic registration generation: only the newest registration may mutate
+// the shared state — an older in-flight one (its tools/list resolved late)
+// must never reconcile away what a newer one registered (roborev job 1646).
+let registrationGeneration = 0;
+
+/** Names of the image tools this process registered (settings live-apply). */
+export function getRegisteredImageToolNames(): ReadonlySet<string> {
+	return registeredImageToolNames;
+}
+
+/** Invalidate any in-flight image-tool registration (the user just disabled
+ * the tools) — a catalog fetch resolving later must not register or
+ * reactivate anything (roborev job 1649). */
+export function invalidateImageToolRegistrations(): void {
+	registrationGeneration++;
+}
+
+/** Test-only: reset module-scoped state. */
+export function _resetImageToolsState(): void {
+	registeredImageToolNames.clear();
+	registeredModelEnums.clear();
+	currentClient.client = undefined;
+	registrationGeneration = 0;
+}
+
+/** A stable facade delegating to the current client — captured by tool
+ * closures at registration time, while the credentials behind it rotate. */
+function delegatingClient(ref: { client?: LunarouteMcpClient }): LunarouteMcpClient {
+	const notConnected = () => Promise.reject(new Error("LunaRoute image tools: not connected"));
+	return {
+		callTool: (name, args, signal) => ref.client?.callTool(name, args, signal) ?? notConnected(),
+		listTools: (signal) => ref.client?.listTools(signal) ?? notConnected(),
+		listToolDescriptors: (signal) => ref.client?.listToolDescriptors?.(signal) ?? notConnected(),
+	};
+}
+
+function modelEnumEquals(
+	a: { enum: string[]; description?: string } | undefined,
+	b: { enum: string[]; description?: string } | undefined,
+): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	return a.description === b.description && a.enum.length === b.enum.length && a.enum.every((v, i) => v === b.enum[i]);
+}
+
+/** Register first-class image tools when the hosted LunaRoute MCP server
+ * offers them. No local presence detection (kata e30g decision): the names
+ * are LunaRoute-specific; the server's tools/list gates entitlement/policy.
+ * Never throws — image tools are optional, exactly like the web tools. */
+export async function registerImageTools(
+	pi: ExtensionAPI,
+	deps: RegisterImageToolsDeps,
+): Promise<ImageToolsRegistration> {
+	const settings = deps.settings ?? DEFAULT_SETTINGS;
+	if (!imageToolsEnabled(deps.env, settings)) {
+		// A disable supersedes any in-flight registration: its catalog fetch
+		// may resolve after this and must not register/reactivate anything
+		// (roborev job 1649).
+		registrationGeneration++;
+		return { generateImage: "skipped-disabled", editImage: "skipped-disabled", uploadImage: "skipped-disabled" };
+	}
+
+	const client = createLunarouteMcpClient({
+		url: resolveMcpUrl(deps.env),
+		headers: {
+			"LUNAROUTE-API-KEY": deps.key,
+			...buildAttributionHeaders(deps.version, deps.sessionId),
+		},
+		fetchImpl: deps.fetchImpl ?? (fetch as FetchLike),
+	});
+
+	// Swap the shared client BEFORE catalog discovery (roborev job 1646):
+	// after a key rotation, the fresh client is strictly better than the
+	// expired one even when the catalog fetch itself fails transiently —
+	// already-registered tools pick the new key up on their next call.
+	const generation = ++registrationGeneration;
+	currentClient.client = client;
+
+	let descriptors: { name: string; inputSchema?: unknown }[];
+	try {
+		descriptors = await (client.listToolDescriptors?.() ??
+			client.listTools().then((names) => names.map((name) => ({ name }))));
+	} catch (err) {
+		// Server unreachable / auth rejected: stay silent, try again on the
+		// next session_start (reload, resume, fork all re-fire it).
+		return {
+			generateImage: "skipped-server",
+			editImage: "skipped-server",
+			uploadImage: "skipped-server",
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+	if (generation !== registrationGeneration) {
+		// A newer registration started while our catalog fetch was in
+		// flight — it owns the shared state now; mutating from this stale
+		// view could reconcile away its tools.
+		return {
+			generateImage: "skipped-server",
+			editImage: "skipped-server",
+			uploadImage: "skipped-server",
+			error: "superseded by a newer registration",
+		};
+	}
+
+	const byName = new Map(descriptors.map((d) => [d.name, d]));
+	const generateDescriptor = byName.get("generate_image");
+	const editDescriptor = byName.get("edit_image");
+	const uploadDescriptor = byName.get("upload_image");
+
+	// Reconcile catalog drift (roborev job 1643): a tool the server no longer
+	// offers (entitlement, org policy, or kill-switch change) is deactivated —
+	// pi has no tool unregister, so the definition remains but the model
+	// never sees it. Ownership is KEPT (it is still our registration; the
+	// name remains in getAllTools): a later re-offer re-activates it, and a
+	// changed enum re-registers — and the ownership pre-check below never
+	// mistakes our own drifted tool for a foreign one (roborev job 1651).
+	for (const name of [...registeredImageToolNames]) {
+		if (!byName.has(name)) {
+			pi.setActiveTools(pi.getActiveTools().filter((n) => n !== name));
+		}
+	}
+
+	// Every registered tool talks through this shared, swappable client (a
+	// rotated key on re-login reaches them without re-registration).
+	const stableClient = delegatingClient(currentClient);
+
+	const registration: ImageToolsRegistration = {
+		generateImage: "skipped-server",
+		editImage: "skipped-server",
+		uploadImage: "skipped-server",
+	};
+
+	// Idempotent per-tool registration (roborev job 1636): session_start
+	// re-fires on resume/fork/reload, so an already-registered name is
+	// re-activated, never pointlessly re-registered — EXCEPT when the
+	// server's model enum changed, which re-registers the tool so its schema
+	// carries the fresh catalog (roborev job 1640; same-extension
+	// re-registration replaces on mainline pi). Each tool registers
+	// independently, and one failure neither blocks the others nor inflates
+	// the reported outcome.
+	const ensureActive = (name: string): void => {
+		// Tools registered after startup are refreshed immediately, but the
+		// active set does not change on its own — merge ours in explicitly.
+		const active = pi.getActiveTools();
+		if (!active.includes(name)) {
+			pi.setActiveTools([...new Set([...active, name])]);
+		}
+	};
+	const offerings: [
+		keyof Pick<ImageToolsRegistration, "generateImage" | "editImage" | "uploadImage">,
+		string,
+		(enumInfo: { enum: string[]; description?: string } | undefined) => unknown,
+	][] = [
+		["generateImage", "generate_image", (enumInfo) =>
+			buildGenerateImageTool({
+				client: stableClient,
+				mcpToolName: "generate_image",
+				env: deps.env,
+				fetchImpl: deps.fetchImpl,
+				modelEnum: enumInfo,
+			})],
+		["editImage", "edit_image", (enumInfo) =>
+			buildEditImageTool({
+				client: stableClient,
+				mcpToolName: "edit_image",
+				env: deps.env,
+				fetchImpl: deps.fetchImpl,
+				modelEnum: enumInfo,
+			})],
+		["uploadImage", "upload_image", () =>
+			buildUploadImageTool({ client: stableClient, mcpToolName: "upload_image", env: deps.env, fetchImpl: deps.fetchImpl })],
+	];
+	for (const [key, name, build] of offerings) {
+		if (!byName.has(name)) continue;
+		// Ownership pre-check (roborev job 1651): cross-extension tool names
+		// are first-registration-wins, so if another extension already
+		// provides this name we stay silent — never register, never track,
+		// never touch its active state from reconciliation or toggles.
+		if (!registeredImageToolNames.has(name) && pi.getAllTools().some((t) => t.name === name)) {
+			registration[key] = "skipped-existing";
+			continue;
+		}
+		const enumInfo = extractModelEnum(byName.get(name)?.inputSchema);
+		const ours = registeredImageToolNames.has(name);
+		if (ours && modelEnumEquals(registeredModelEnums.get(name), enumInfo)) {
+			ensureActive(name);
+			registration[key] = "registered";
+			continue;
+		}
+		try {
+			pi.registerTool(build(enumInfo) as never);
+			registeredImageToolNames.add(name);
+			registeredModelEnums.set(name, enumInfo);
+			ensureActive(name);
+			registration[key] = "registered";
+		} catch (err) {
+			registration[key] = "register-failed";
+			registration.error ??= err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	return registration;
+}

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
   DEFAULT_SETTINGS,
+  imageToolsEnabled,
   mcpEnabled,
   readSettings,
   resolveSearchProvider,
@@ -60,15 +61,17 @@ describe("readSettings (tolerant reader)", () => {
       mcp: "off",
       webTools: "on",
       searchProvider: "server",
+      imageTools: "on",
     });
   });
 
   test("invalid per-key values fall back per key only", () => {
-    const file = '{"mcp":"maybe","webTools":"off","searchProvider":"google"}';
+    const file = '{"mcp":"maybe","webTools":"off","searchProvider":"google","imageTools":"maybe"}';
     expect(readSettings(ENV, fakeIo({ [path]: file }))).toEqual({
       mcp: "on",
       webTools: "off",
       searchProvider: "server",
+      imageTools: "on",
     });
   });
 
@@ -78,22 +81,23 @@ describe("readSettings (tolerant reader)", () => {
   });
 
   test("full valid file round-trips", () => {
-    const file = '{"mcp":"off","webTools":"off","searchProvider":"brave"}';
+    const file = '{"mcp":"off","webTools":"off","searchProvider":"brave","imageTools":"off"}';
     expect(readSettings(ENV, fakeIo({ [path]: file }))).toEqual({
       mcp: "off",
       webTools: "off",
       searchProvider: "brave",
+      imageTools: "off",
     });
   });
 });
 
 describe("writeSettings (atomic, canonical)", () => {
-  test("writes tmp then renames over target; canonical 3-key JSON + newline", () => {
+  test("writes tmp then renames over target; canonical 4-key JSON + newline", () => {
     const io = fakeIo({});
-    writeSettings(ENV, { mcp: "off", webTools: "on", searchProvider: "kagi" }, io);
+    writeSettings(ENV, { mcp: "off", webTools: "on", searchProvider: "kagi", imageTools: "off" }, io);
     const target = settingsPath(ENV);
     const tmp = `${target}.test-uuid.tmp`;
-    const expected = `${JSON.stringify({ mcp: "off", webTools: "on", searchProvider: "kagi" }, null, 2)}\n`;
+    const expected = `${JSON.stringify({ mcp: "off", webTools: "on", searchProvider: "kagi", imageTools: "off" }, null, 2)}\n`;
     expect(io.writeFileSync).toHaveBeenCalledWith(tmp, expected);
     expect(io.renameSync).toHaveBeenCalledWith(tmp, target);
   });
@@ -101,7 +105,7 @@ describe("writeSettings (atomic, canonical)", () => {
   test("real round-trip: file exists, no tmp leftovers, read-back equals", () => {
     const dir = mkdtempSync(join(tmpdir(), "bjy9-settings-"));
     const env = { PI_CODING_AGENT_DIR: dir } as NodeJS.ProcessEnv;
-    const settings = { mcp: "off" as const, webTools: "on" as const, searchProvider: "exa" as const };
+    const settings = { mcp: "off" as const, webTools: "on" as const, searchProvider: "exa" as const, imageTools: "on" as const };
     writeSettings(env, settings);
     expect(readSettings(env)).toEqual(settings);
     expect(readdirSync(dir)).toEqual(["lunaroute.json"]);
@@ -138,6 +142,21 @@ describe("decisions", () => {
 
   test("webToolsEnabled: env never enables past a file off (env only disables)", () => {
     expect(webToolsEnabled({ LUNAROUTE_WEB_TOOLS: "on" }, { ...DEFAULT_SETTINGS, webTools: "off" })).toBe(false);
+  });
+
+  test("imageToolsEnabled: file on → on; file off → off", () => {
+    expect(imageToolsEnabled({}, DEFAULT_SETTINGS)).toBe(true);
+    expect(imageToolsEnabled({}, { ...DEFAULT_SETTINGS, imageTools: "off" })).toBe(false);
+  });
+
+  test("imageToolsEnabled: env off|0|false wins over file on", () => {
+    for (const v of ["off", "0", "false"]) {
+      expect(imageToolsEnabled({ LUNAROUTE_IMAGE_TOOLS: v }, DEFAULT_SETTINGS)).toBe(false);
+    }
+  });
+
+  test("imageToolsEnabled: env never enables past a file off (env only disables)", () => {
+    expect(imageToolsEnabled({ LUNAROUTE_IMAGE_TOOLS: "on" }, { ...DEFAULT_SETTINGS, imageTools: "off" })).toBe(false);
   });
 
   test("mcpEnabled", () => {

@@ -14,6 +14,7 @@ import {
 	registerLunarouteSettingsCommand,
 	type SettingsCommandDeps,
 } from "../src/settings-ui.js";
+import { _resetImageToolsState, registerImageTools } from "../src/image-tools.js";
 import { _resetWebToolsState, registerWebTools, type FetchLike } from "../src/web-tools.js";
 
 // keyHint/getSettingsListTheme read pi's global theme — initialize like the host does.
@@ -106,6 +107,7 @@ function apierDeps(overrides: Partial<SettingsCommandDeps> = {}): SettingsComman
 
 beforeEach(() => {
 	vi.unstubAllEnvs();
+	_resetImageToolsState();
 	_resetWebToolsState();
 	_resetMcpState();
 	_setAdapterConfigLoader(async () => ({ mcpServers: {} }));
@@ -116,18 +118,19 @@ beforeEach(() => {
 // ============================================================================
 
 describe("buildSettingsItems", () => {
-	test("three rows with the spec'd ids, labels, and value cycles", () => {
+	test("four rows with the spec'd ids, labels, and value cycles", () => {
 		const items = buildSettingsItems(DEFAULT_SETTINGS);
-		expect(items.map((i) => i.id)).toEqual(["mcp", "webTools", "searchProvider"]);
+		expect(items.map((i) => i.id)).toEqual(["mcp", "webTools", "imageTools", "searchProvider"]);
 		expect(items[0]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[1]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
-		expect(items[2]).toMatchObject({ currentValue: "server", values: ["server", "brave", "exa", "kagi"] });
+		expect(items[2]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
+		expect(items[3]).toMatchObject({ currentValue: "server", values: ["server", "brave", "exa", "kagi"] });
 	});
 
 	test("reflects the current settings values", () => {
-		const settings: LunarouteSettings = { mcp: "off", webTools: "off", searchProvider: "kagi" };
+		const settings: LunarouteSettings = { mcp: "off", webTools: "off", searchProvider: "kagi", imageTools: "on" };
 		const items = buildSettingsItems(settings);
-		expect(items.map((i) => i.currentValue)).toEqual(["off", "off", "kagi"]);
+		expect(items.map((i) => i.currentValue)).toEqual(["off", "off", "on", "kagi"]);
 	});
 });
 
@@ -174,6 +177,82 @@ describe("createSettingChangeApplier", () => {
 		const applier = createSettingChangeApplier(pi, apierDeps({ write: write as never }), ui, async () => "lr_key", DEFAULT_SETTINGS);
 		await applier("mcp", "off");
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("disk full"), "error");
+	});
+
+	describe("imageTools", () => {
+		const IMAGE_TOOLS_FETCH = mcpFetch({
+			initialize: () => ({}),
+			"notifications/initialized": () => undefined,
+			"tools/list": () => ({
+				tools: [
+					{ name: "generate_image", inputSchema: { type: "object", properties: { model: { type: "string", enum: ["flux-2-klein"] } } } },
+					{ name: "edit_image" },
+					{ name: "upload_image" },
+				],
+			}),
+		});
+
+		test("off deactivates our image tools; on re-activates without re-registering", async () => {
+			const { pi, getActive } = fakePi();
+			await registerImageTools(pi, { key: "lr_key", env: ENV, version: "0.6.0-test", sessionId: "s", fetchImpl: IMAGE_TOOLS_FETCH });
+			expect(getActive()).toContain("generate_image");
+			const ui = { notify: vi.fn() };
+			const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", DEFAULT_SETTINGS);
+			await applier("imageTools", "off");
+			expect(getActive()).not.toContain("generate_image");
+			expect(getActive()).toContain("read");
+			// On-toggle revalidates the server catalog (roborev job 1643) —
+			// stub the hosted server for the re-check; the tools are still
+			// offered, so they are re-activated without re-registration.
+			// Same catalog the initial registration saw (including the model
+			// enum) — so the re-check re-activates without re-registering.
+			vi.stubGlobal("fetch", IMAGE_TOOLS_FETCH);
+			try {
+				await applier("imageTools", "on");
+			} finally {
+				vi.unstubAllGlobals();
+			}
+			expect(getActive()).toContain("generate_image");
+			expect(pi.registerTool).toHaveBeenCalledTimes(3);
+			expect(ui.notify).toHaveBeenCalledWith("LunaRoute image tools disabled", "info");
+			expect(ui.notify).toHaveBeenCalledWith("LunaRoute image tools enabled", "info");
+		});
+
+		test("on with nothing registered, key present, server offers → registers", async () => {
+			const { pi, registered } = fakePi();
+			const ui = { notify: vi.fn() };
+			vi.stubGlobal("fetch", IMAGE_TOOLS_FETCH);
+			try {
+				const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", DEFAULT_SETTINGS);
+				await applier("imageTools", "on");
+				expect(registered.map((t) => t.name).sort()).toEqual(["edit_image", "generate_image", "upload_image"]);
+				expect(ui.notify).toHaveBeenCalledWith("LunaRoute image tools enabled", "info");
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		});
+
+		test("on with nothing registered, key present, server unreachable → warning", async () => {
+			const { pi } = fakePi();
+			const ui = { notify: vi.fn() };
+			vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 503 })));
+			try {
+				const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", DEFAULT_SETTINGS);
+				await applier("imageTools", "on");
+				expect(ui.notify).toHaveBeenCalledWith("LunaRoute image tools unavailable from the server right now.", "warning");
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		});
+
+		test("on with nothing registered and no key → login hint", async () => {
+			const { pi } = fakePi();
+			const ui = { notify: vi.fn() };
+			const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => undefined, DEFAULT_SETTINGS);
+			await applier("imageTools", "on");
+			expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("/login lunaroute"), "info");
+			expect(pi.registerTool).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("webTools", () => {
@@ -383,5 +462,133 @@ describe("registerLunarouteSettingsCommand", () => {
 		component!.handleInput("\r");
 		await new Promise((r) => setTimeout(r, 0)); // applier runs void-async
 		expect(write).toHaveBeenCalledWith(ENV, { ...DEFAULT_SETTINGS, webTools: "off" });
+	});
+});
+
+describe("imageTools on-toggle revalidation (roborev job 1643)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetImageToolsState();
+	});
+
+	test("on re-activates only what the server still offers", async () => {
+		const { pi, getActive } = fakePi();
+		const fullFetch = mcpFetch({
+			initialize: () => ({}),
+			"notifications/initialized": () => undefined,
+			"tools/list": () => ({ tools: [{ name: "generate_image" }, { name: "upload_image" }] }),
+		});
+		await registerImageTools(pi, { key: "lr_key", env: ENV, version: "0.6.0-test", sessionId: "s", fetchImpl: fullFetch });
+		expect(getActive()).toContain("upload_image");
+
+		const ui = { notify: vi.fn() };
+		const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", DEFAULT_SETTINGS);
+		await applier("imageTools", "off");
+		expect(getActive()).not.toContain("upload_image");
+
+		// The server stopped offering upload_image while we were off.
+		vi.stubGlobal(
+			"fetch",
+			mcpFetch({
+				initialize: () => ({}),
+				"notifications/initialized": () => undefined,
+				"tools/list": () => ({ tools: [{ name: "generate_image" }] }),
+			}),
+		);
+		try {
+			await applier("imageTools", "on");
+			expect(getActive()).toContain("generate_image");
+			expect(getActive()).not.toContain("upload_image");
+			expect(ui.notify).toHaveBeenCalledWith("LunaRoute image tools enabled", "info");
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});
+
+describe("imageTools off during discovery supersedes (roborev job 1649)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetImageToolsState();
+	});
+
+	test("applier off while a registration is in flight: tools never activate", async () => {
+		const { pi, getActive } = fakePi();
+		let resolveA: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			resolveA = resolve;
+		});
+		let listStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			listStarted = resolve;
+		});
+		const deferredFetch = async (_url: string, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body)) as { id: number; method: string };
+			if (body.method === "tools/list") {
+				listStarted(); // the fetch is attached and parked — deterministic
+				await gate;
+				return new Response(
+					JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "generate_image" }, { name: "upload_image" }] } }),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }), { status: 200, headers: { "content-type": "application/json" } });
+		};
+		vi.stubGlobal("fetch", deferredFetch);
+		const ui = { notify: vi.fn() };
+		const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", DEFAULT_SETTINGS);
+		// The on-toggle starts a registration whose catalog fetch parks…
+		const on = applier("imageTools", "on");
+		await started;
+		// …and the user flips it off before the catalog resolves.
+		await applier("imageTools", "off");
+		resolveA();
+		await on;
+		try {
+			expect(getActive()).not.toContain("generate_image");
+			expect(getActive()).not.toContain("upload_image");
+			expect(getActive()).toEqual(expect.arrayContaining(["read", "bash"]));
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});
+
+describe("imageTools apply supersession (roborev job 1669)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetImageToolsState();
+	});
+
+	test("an on-apply superseded by a later off toggle never activates", async () => {
+		const { pi, getActive } = fakePi();
+		let resolveKey!: (key: string | undefined) => void;
+		const keyPromise = new Promise<string | undefined>((resolve) => {
+			resolveKey = resolve;
+		});
+		vi.stubGlobal(
+			"fetch",
+			mcpFetch({
+				initialize: () => ({}),
+				"notifications/initialized": () => undefined,
+				"tools/list": () => ({ tools: [{ name: "generate_image" }, { name: "upload_image" }] }),
+			}),
+		);
+		const ui = { notify: vi.fn() };
+		const applier = createSettingChangeApplier(pi, apierDeps(), ui, () => keyPromise, DEFAULT_SETTINGS);
+		try {
+			// The on-apply parks at the deferred key lookup…
+			const on = applier("imageTools", "on");
+			// …the user flips it off before the key resolves…
+			await applier("imageTools", "off");
+			resolveKey("lr_key");
+			await on;
+			// …so the stale on-apply must not register or activate anything.
+			expect(getActive()).not.toContain("generate_image");
+			expect(getActive()).not.toContain("upload_image");
+			expect(pi.registerTool).not.toHaveBeenCalled();
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });

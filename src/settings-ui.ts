@@ -11,6 +11,7 @@ import {
 	registerLunarouteMcp,
 } from "./mcp.js";
 import { readSettings, settingsPath, writeSettings, type LunarouteSettings } from "./settings.js";
+import { getRegisteredImageToolNames, invalidateImageToolRegistrations, registerImageTools } from "./image-tools.js";
 import { getRegisteredWebToolNames, registerWebTools } from "./web-tools.js";
 
 /** The `/lunaroute` settings command (kata bjy9): a pi-native SettingsList
@@ -48,6 +49,13 @@ export function buildSettingsItems(settings: LunarouteSettings): SettingItem[] {
 			values: ["on", "off"],
 		},
 		{
+			id: "imageTools",
+			label: "Image tools",
+			description: "First-class generate_image / edit_image / upload_image backed by LunaRoute",
+			currentValue: settings.imageTools,
+			values: ["on", "off"],
+		},
+		{
 			id: "searchProvider",
 			label: "Search provider",
 			description: "Default provider for web_search; the model can still override per call",
@@ -78,6 +86,10 @@ export function createSettingChangeApplier(
 	const read = deps.read ?? readSettings;
 	const write = deps.write ?? writeSettings;
 	let settings = initialSettings;
+	// Image-tools apply generation (roborev job 1669): an on-apply parked at
+	// its key lookup must not resume past a newer toggle — the later apply
+	// supersedes the earlier one wholesale.
+	let imageToolsApplyGeneration = 0;
 
 	return async (id: string, newValue: string): Promise<void> => {
 		settings = { ...settings, [id]: newValue } as LunarouteSettings;
@@ -90,6 +102,18 @@ export function createSettingChangeApplier(
 		if (id === "searchProvider") return; // next web_search call reads it
 		try {
 			if (id === "webTools") await applyWebTools(pi, deps, ui, getApiKey, settings, newValue === "on");
+			if (id === "imageTools") {
+				const generation = ++imageToolsApplyGeneration;
+				await applyImageTools(
+					pi,
+					deps,
+					ui,
+					getApiKey,
+					settings,
+					newValue === "on",
+					() => generation === imageToolsApplyGeneration,
+				);
+			}
 			if (id === "mcp") await applyMcp(pi, deps, ui, getApiKey, newValue === "on");
 		} catch (err) {
 			// Never throw from a SettingsList change callback.
@@ -236,4 +260,55 @@ export function registerLunarouteSettingsCommand(pi: ExtensionAPI, deps: Setting
 			});
 		},
 	});
+}
+
+/** Image-tools live-apply (kata e30g). Mirrors applyWebTools minus the
+ * presence-detection case — there is no "another extension already provides
+ * generate_image" branch by design. */
+async function applyImageTools(
+	pi: ExtensionAPI,
+	deps: SettingsCommandDeps,
+	ui: { notify: NotifyFn },
+	getApiKey: () => Promise<string | undefined>,
+	settings: LunarouteSettings,
+	on: boolean,
+	isCurrent: () => boolean = () => true,
+): Promise<void> {
+	if (!on) {
+		const ours = getRegisteredImageToolNames();
+		if (ours.size > 0) {
+			pi.setActiveTools(pi.getActiveTools().filter((name) => !ours.has(name)));
+		}
+		// An in-flight registration (catalog fetch still resolving) must not
+		// land after this off-toggle and reactivate anything.
+		invalidateImageToolRegistrations();
+		ui.notify("LunaRoute image tools disabled", "info");
+		return;
+	}
+	const key = await getApiKey();
+	if (!isCurrent()) return; // a later toggle superseded this apply while parked
+	if (!key) {
+		ui.notify("Not logged in — run /login lunaroute to enable image tools.", "info");
+		return;
+	}
+	// Always delegate — registerImageTools revalidates the server catalog on
+	// every call: it reconciles away tools the server stopped offering and
+	// re-activates (never re-registers) the ones it still does (roborev job
+	// 1643).
+	const result = await registerImageTools(pi, {
+		key,
+		env: deps.env,
+		version: deps.version,
+		sessionId: deps.sessionId,
+		settings,
+	});
+	if (result.generateImage === "registered" || result.editImage === "registered" || result.uploadImage === "registered") {
+		ui.notify("LunaRoute image tools enabled", "info");
+	} else if (result.generateImage === "skipped-existing" || result.editImage === "skipped-existing" || result.uploadImage === "skipped-existing") {
+		ui.notify("Another extension already provides image tools — LunaRoute's stays off.", "info");
+	} else if (result.error !== undefined) {
+		ui.notify("LunaRoute image tools unavailable from the server right now.", "warning");
+	} else {
+		ui.notify("LunaRoute image tools are not available for your organization.", "info");
+	}
 }

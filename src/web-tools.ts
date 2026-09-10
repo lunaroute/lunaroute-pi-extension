@@ -79,12 +79,16 @@ export function detectWebTools(toolNames: string[]): WebToolPresence {
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface McpToolCallResult {
-	content: { type: string; text?: string }[];
+	content: { type: string; text?: string; data?: string; mimeType?: string }[];
 	isError?: boolean;
 }
 
 export interface LunarouteMcpClient {
 	listTools(signal?: AbortSignal): Promise<string[]>;
+	/** Full tools/list descriptors (name + inputSchema) for enum baking
+	 * (kata e30g). Optional so hand-rolled fakes and older clients keep
+	 * typechecking; absence degrades to name-only registration. */
+	listToolDescriptors?(signal?: AbortSignal): Promise<{ name: string; inputSchema?: unknown }[]>;
 	callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<McpToolCallResult>;
 }
 
@@ -192,6 +196,15 @@ export function createLunarouteMcpClient(opts: McpClientOptions): LunarouteMcpCl
 			return (result.tools ?? [])
 				.map((t) => t.name)
 				.filter((n): n is string => typeof n === "string");
+		},
+		async listToolDescriptors(signal) {
+			await ensureInitialized(signal);
+			const result = (await rpc("tools/list", undefined, signal)) as {
+				tools?: { name?: string; inputSchema?: unknown }[];
+			};
+			return (result.tools ?? []).filter(
+				(t): t is { name: string; inputSchema?: unknown } => typeof t.name === "string",
+			);
 		},
 		async callTool(name, args, signal) {
 			await ensureInitialized(signal);
