@@ -300,11 +300,11 @@ export async function fetchImageBytes(
 	if (Number.isFinite(declared) && declared > maxBytes) return undefined;
 	// …and bound the actual bytes too: a lying or absent Content-Length must
 	// not translate into an unbounded buffer.
+	// No readable body (null-body responses — 204/304, Response(null)) means
+	// there is nothing to save; there is deliberately NO arrayBuffer fallback:
+	// it would buffer unbounded before the cap check (roborev job 1696).
 	const reader = res.body?.getReader();
-	if (!reader) {
-		const buffered = Buffer.from(await res.arrayBuffer());
-		return buffered.byteLength > maxBytes ? undefined : buffered;
-	}
+	if (!reader) return undefined;
 	const chunks: Uint8Array[] = [];
 	let total = 0;
 	for (;;) {

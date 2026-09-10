@@ -968,3 +968,11 @@ describe("isError results are failures (roborev job 1694)", () => {
 		await expect(tool.execute("t1", { path: "/home/u/cat.png" } as never, AC(), undefined, {} as never)).rejects.toThrow(/image_too_large/);
 	});
 });
+
+describe("body-less responses (roborev job 1696)", () => {
+	test("a response with no readable body returns undefined — no unbounded fallback", async () => {
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+		const bytes = await fetchImageBytes("https://u", fetchImpl as never, undefined, 1024);
+		expect(bytes).toBeUndefined();
+	});
+});
