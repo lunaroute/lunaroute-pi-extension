@@ -780,3 +780,35 @@ describe("bounded upload read (roborev job 1659)", () => {
 		expect(client.callTool).not.toHaveBeenCalled();
 	});
 });
+
+describe("abort-aware save (roborev job 1661)", () => {
+	test("aborting after the download completes writes nothing", async () => {
+		const client = fakeClient([{ type: "text", text: GENERATED_TEXT }]); // embed dropped → URL fetch
+		const controller = new AbortController();
+		const fetchImpl = vi.fn(async () => {
+			controller.abort(); // cancelled after the download resolved
+			return new Response("bytes", { status: 200 });
+		});
+		const io = memoryIo();
+		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
+		const tool = buildGenerateImageTool({ client, mcpToolName: "generate_image", env: process.env, io, fetchImpl });
+		const result = await tool.execute("t1", { prompt: "p", model: "m" } as never, controller.signal, undefined, {} as never);
+		expect(io.files.size).toBe(0); // nothing written
+		expect((result.content[0] as { text?: string }).text).toContain("not saved locally");
+	});
+
+	test("aborting before the save skips it even with inline bytes", async () => {
+		const client = fakeClient([
+			{ type: "text", text: GENERATED_TEXT },
+			{ type: "image", data: Buffer.from("pngbytes").toString("base64"), mimeType: "image/png" },
+		]);
+		const controller = new AbortController();
+		controller.abort();
+		const io = memoryIo();
+		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
+		const tool = buildGenerateImageTool({ client, mcpToolName: "generate_image", env: process.env, io });
+		const result = await tool.execute("t1", { prompt: "p", model: "m" } as never, controller.signal, undefined, {} as never);
+		expect(io.files.size).toBe(0);
+		expect((result.content[0] as { text?: string }).text).toContain("not saved locally");
+	});
+});

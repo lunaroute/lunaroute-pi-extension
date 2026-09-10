@@ -270,10 +270,15 @@ async function saveImage(
 	format: string,
 	bytes: Uint8Array,
 	io: ImageIo,
+	signal?: AbortSignal,
 ): Promise<string | undefined> {
 	if (!IMAGE_ID_PATTERN.test(id)) return undefined;
+	if (signal?.aborted) return undefined;
 	const path = join(dir, `${id}${extForFormat(format)}`);
 	await io.mkdir(dir, { recursive: true });
+	// Re-check before the write: an abort landing between the download
+	// resolving and this point must not leave a file behind (roborev job 1661).
+	if (signal?.aborted) return undefined;
 	await io.writeFile(path, bytes);
 	return path;
 }
@@ -405,9 +410,9 @@ async function finishImageCall(
 		bytes = await fetchImageBytes(parsed.url, deps.fetchImpl ?? (fetch as FetchLike), signal).catch(() => undefined);
 	}
 	let path: string | undefined;
-	if (bytes && parsed.id) {
+	if (bytes && parsed.id && !signal?.aborted) {
 		try {
-			path = await saveImage(resolveImageDir(deps.env), parsed.id, parsed.format, bytes, deps.io ?? defaultIo);
+			path = await saveImage(resolveImageDir(deps.env), parsed.id, parsed.format, bytes, deps.io ?? defaultIo, signal);
 		} catch {
 			// Best-effort: the id + url still go out.
 		}
