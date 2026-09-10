@@ -165,14 +165,16 @@ async function saveDocument(
 	signal?: AbortSignal,
 ): Promise<string | undefined> {
 	if (signal?.aborted) return undefined;
-	const tmp = `${dir}/${baseName}.${randomUUID()}.tmp`;
+	// Hoisted so the catch always removes the REAL temp file (roborev 1713).
+	let finalTmp: string | undefined;
 	try {
 		await io.mkdir(dir, { recursive: true });
 		if (signal?.aborted) return undefined;
 		const target = join(dir, `${baseName}.md`);
 		const existing = await io.readFileBounded(target, bytes.byteLength + 1).catch(() => undefined);
+		const preExisting = existing !== undefined && buffersEqual(existing, bytes);
 		const finalPath = existing && !buffersEqual(existing, bytes) ? join(dir, `${baseName}-${randomUUID().slice(0, 6)}.md`) : target;
-		const finalTmp = `${finalPath}.${randomUUID()}.tmp`;
+		finalTmp = `${finalPath}.${randomUUID()}.tmp`;
 		await io.writeFile(finalTmp, bytes);
 		if (signal?.aborted) {
 			await io.rm(finalTmp).catch(() => {});
@@ -180,12 +182,20 @@ async function saveDocument(
 		}
 		await io.rename(finalTmp, finalPath);
 		if (signal?.aborted) {
-			await io.rm(finalPath).catch(() => {});
+			// Post-rename cancellation only removes what WE introduced: a
+			// pre-existing identical document is the user's file, not ours,
+			// and shared <basename>.md names are not unique like img_ ids
+			// (roborev 1713 — the e30g image rule does not carry over).
+			if (!preExisting) {
+				await io.rm(finalPath).catch(() => {});
+			}
 			return undefined;
 		}
 		return finalPath;
 	} catch {
-		await io.rm(tmp).catch(() => {});
+		if (finalTmp !== undefined) {
+			await io.rm(finalTmp).catch(() => {});
+		}
 		return undefined;
 	}
 }
@@ -266,23 +276,32 @@ export function buildConvertTool(deps: ConvertToolBuildDeps) {
 			onUpdate?.({ content: [{ type: "text", text: "Converting document via LunaRoute…" }], details: {} });
 			// Both error shapes route output_too_large to the fallback: our own
 			// client THROWS on isError, but a host-provided client may hand the
-			// raw result back (the e30g/roborev-1694 lesson).
+			// raw result back (the e30g/roborev-1694 lesson). The fallback itself
+			// runs OUTSIDE this try — its own errors must never re-enter the
+			// catch and trigger a duplicate fallback conversion (roborev 1713).
 			let call: { content?: { type: string; text?: string }[]; isError?: boolean };
+			let fallbackError: string | undefined;
 			try {
 				call = await deps.client.callTool(deps.mcpToolName, { ...args, embed: true }, signal);
 				if (call.isError) {
 					const message = textParts(call);
 					if (/output_too_large/.test(message)) {
-						return await convertFallback(args, filename, deps, io, signal, onUpdate, message);
+						fallbackError = message;
+					} else {
+						throw new Error(message || `MCP tool ${deps.mcpToolName} returned an error`);
 					}
-					throw new Error(message || `MCP tool ${deps.mcpToolName} returned an error`);
 				}
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				if (!/output_too_large/.test(message)) throw err;
-				return await convertFallback(args, filename, deps, io, signal, onUpdate, message);
+				fallbackError = message;
 			}
-			const markdown = textParts(call);
+			if (fallbackError !== undefined) {
+				return await convertFallback(args, filename, deps, io, signal, onUpdate, fallbackError);
+			}
+			// Every non-fallback path assigned `call` above (success in the
+			// try; errors threw or set fallbackError).
+			const markdown = textParts(call!);
 			const { text, truncated } = truncateForModel(markdown);
 			let fullOutputPath: string | undefined;
 			if (truncated) {

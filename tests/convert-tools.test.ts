@@ -484,3 +484,87 @@ describe("registerConvertTools", () => {
 		expect(activeRef()).toContain("convert_document");
 	});
 });
+
+describe("roborev job 1713: fallback dedup, abort-safe pre-existing files, temp cleanup", () => {
+	const DOCX = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(64)]);
+	const LINK_TEXT = "url: https://storage.example.com/docs/doc_01X?sig=abc (link expires 2026-09-17T00:00:00Z)";
+
+	function bothEmbedsFailClient() {
+		return {
+			listTools: vi.fn(async () => [] as string[]),
+			callTool: vi.fn(async (_name: string, args: Record<string, unknown>) => ({
+				content: [
+					{
+						type: "text",
+						text: args.embed
+							? "output_too_large: document output is 2000000 bytes; inline cap is 1048576; try embed: false"
+							: "output_too_large: document output exceeds MCP_DOC_MAX_OUTPUT_BYTES",
+					},
+				],
+				isError: true,
+			})),
+		};
+	}
+
+	test("a double output_too_large runs the fallback exactly once (no re-entry)", async () => {
+		const client = bothEmbedsFailClient();
+		const io = memoryIo();
+		io.files.set("/home/u/report.docx", DOCX);
+		const tool = buildConvertTool({ client, mcpToolName: "convert_document", env: {}, io });
+		await expect(tool.execute("t1", { path: "/home/u/report.docx" } as never, AC(), undefined, {} as never)).rejects.toThrow(/output_too_large/);
+		const embeds = client.callTool.mock.calls.map(([, args]) => (args as Record<string, unknown>).embed);
+		expect(embeds).toEqual([true, false]); // exactly one embed:true + one fallback — no duplicate fallback
+	});
+
+	test("aborting after the rename never deletes a pre-existing identical document", async () => {
+		const client = {
+			listTools: vi.fn(async () => [] as string[]),
+			callTool: vi.fn(async (_name: string, args: Record<string, unknown>) => {
+				if (args.embed) {
+					return { content: [{ type: "text", text: "output_too_large: try embed: false" }], isError: true };
+				}
+				return { content: [{ type: "text", text: LINK_TEXT }], isError: false };
+			}),
+		};
+		const io = memoryIo();
+		io.files.set("/home/u/report.docx", DOCX);
+		const preExisting = Buffer.from("# same content\n");
+		io.files.set("/tmp/agent/lunaroute-docs/report.md", preExisting); // already there, identical
+		const controller = new AbortController();
+		const fetchImpl = vi.fn(async () => new Response("# same content\n", { status: 200 }));
+		const origRename = io.rename.bind(io);
+		io.rename = async (from: string, to: string) => {
+			await origRename(from, to); // the rename lands
+			controller.abort(); // …then cancellation arrives
+		};
+		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
+		const tool = buildConvertTool({ client, mcpToolName: "convert_document", env: process.env, io, fetchImpl });
+		const result = await tool.execute("t1", { path: "/home/u/report.docx" } as never, controller.signal, undefined, {} as never);
+		expect(io.files.get("/tmp/agent/lunaroute-docs/report.md")).toEqual(preExisting); // untouched
+		expect((result.content[0] as { text?: string }).text).not.toContain("saved to:");
+	});
+
+	test("a failed rename cleans the real temp file (no .tmp leak)", async () => {
+		const client = {
+			listTools: vi.fn(async () => [] as string[]),
+			callTool: vi.fn(async (_name: string, args: Record<string, unknown>) => {
+				if (args.embed) {
+					return { content: [{ type: "text", text: "output_too_large: try embed: false" }], isError: true };
+				}
+				return { content: [{ type: "text", text: LINK_TEXT }], isError: false };
+			}),
+		};
+		const io = memoryIo();
+		io.files.set("/home/u/report.docx", DOCX);
+		io.rename = async () => {
+			throw new Error("disk full");
+		};
+		const fetchImpl = vi.fn(async () => new Response("# content\n", { status: 200 }));
+		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
+		const tool = buildConvertTool({ client, mcpToolName: "convert_document", env: process.env, io, fetchImpl });
+		const result = await tool.execute("t1", { path: "/home/u/report.docx" } as never, AC(), undefined, {} as never);
+		const leftovers = [...io.files.keys()].filter((k) => k.endsWith(".tmp"));
+		expect(leftovers).toEqual([]);
+		expect((result.content[0] as { text?: string }).text).toContain("could not be saved locally");
+	});
+});
