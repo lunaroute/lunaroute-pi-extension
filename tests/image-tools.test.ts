@@ -159,8 +159,10 @@ function memoryIo(): ImageIo & { files: Map<string, Uint8Array> } {
 		writeFile: async (path, data) => {
 			files.set(path, data);
 		},
-		stat: async (path) => ({ size: files.get(path)?.length ?? 0 }),
-		readFile: async (path) => files.get(path) ?? new Uint8Array(),
+		readFileBounded: async (path, maxBytes) => {
+			const bytes = files.get(path) ?? new Uint8Array();
+			return bytes.subarray(0, maxBytes);
+		},
 	};
 }
 
@@ -726,7 +728,7 @@ describe("foreign same-named tools + upload TOCTOU (roborev job 1651)", () => {
 		io.files.set("/home/u/grew.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 		const big = new Uint8Array(UPLOAD_MAX_BYTES + 1);
 		big.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-		io.readFile = async () => big; // stat said 8 bytes; the read says otherwise
+		io.readFileBounded = async () => big; // the file grew — the read returns more than the ceiling
 		const tool = buildUploadImageTool({ client, mcpToolName: "upload_image", env: process.env, io });
 		await expect(tool.execute("t1", { path: "/home/u/grew.png" } as never, AC(), undefined, {} as never)).rejects.toThrow(/11 MiB/);
 		expect(client.callTool).not.toHaveBeenCalled();
@@ -755,5 +757,26 @@ describe("upload url scheme validation + download abort (roborev job 1656)", () 
 		const controller = new AbortController();
 		await tool.execute("t1", { prompt: "p", model: "m" } as never, controller.signal, undefined, {} as never);
 		expect(seenSignal).toBe(controller.signal);
+	});
+});
+
+describe("bounded upload read (roborev job 1659)", () => {
+	test("a huge swapped file is never fully read — the read is capped at the ceiling", async () => {
+		const client = fakeClient([{ type: "text", text: UPLOADED_TEXT }]);
+		const io = memoryIo();
+		// A file far larger than any image: 64 MiB of PNG-magic bytes.
+		const huge = Buffer.alloc(64 * 1024 * 1024);
+		huge.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+		io.files.set("/home/u/huge.png", huge);
+		let maxRequested = 0;
+		const origBounded = io.readFileBounded.bind(io);
+		io.readFileBounded = async (path, maxBytes) => {
+			maxRequested = Math.max(maxRequested, maxBytes);
+			return origBounded(path, maxBytes);
+		};
+		const tool = buildUploadImageTool({ client, mcpToolName: "upload_image", env: process.env, io });
+		await expect(tool.execute("t1", { path: "/home/u/huge.png" } as never, AC(), undefined, {} as never)).rejects.toThrow(/11 MiB/);
+		expect(maxRequested).toBe(UPLOAD_MAX_BYTES + 1); // never asked for more
+		expect(client.callTool).not.toHaveBeenCalled();
 	});
 });

@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI, ThemeColor, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -209,8 +209,10 @@ export interface ImageToolDetails {
 export interface ImageIo {
 	mkdir(path: string, options: { recursive: boolean }): Promise<void>;
 	writeFile(path: string, data: Uint8Array): Promise<void>;
-	stat(path: string): Promise<{ size: number }>;
-	readFile(path: string): Promise<Uint8Array>;
+	/** Read at most maxBytes from the start of the file. The bound is
+	 * load-bearing: a path swapped for a huge file between checks must never
+	 * be fully loaded (roborev job 1659). */
+	readFileBounded(path: string, maxBytes: number): Promise<Uint8Array>;
 }
 
 const defaultIo: ImageIo = {
@@ -219,8 +221,18 @@ const defaultIo: ImageIo = {
 		await mkdir(path, options);
 	},
 	writeFile,
-	stat,
-	readFile,
+	// Descriptor-based bounded read: one open, one positional read capped at
+	// maxBytes — the file's true size never dictates memory use.
+	readFileBounded: async (path, maxBytes) => {
+		const handle = await open(path, "r");
+		try {
+			const buffer = Buffer.alloc(maxBytes);
+			const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);
+			return buffer.subarray(0, bytesRead);
+		} finally {
+			await handle.close();
+		}
+	},
 };
 
 type ThemeLike = {
@@ -468,19 +480,13 @@ export function buildUploadImageTool(deps: ImageToolBuildDeps) {
 				throw new Error("exactly one of path or url is required, not both");
 			} else if (params.path) {
 				onUpdate?.({ content: [{ type: "text", text: `Reading ${params.path}…` }], details: {} });
-				const info = await io.stat(params.path);
-				if (info.size > UPLOAD_MAX_BYTES) {
-					throw new Error(
-						`${params.path} is ${(info.size / (1024 * 1024)).toFixed(1)} MiB — exceeds the ${(UPLOAD_MAX_BYTES / (1024 * 1024)) | 0} MiB LunaRoute upload ceiling`,
-					);
-				}
-				const data = await io.readFile(params.path);
+				// Bounded read (roborev jobs 1651 + 1659): at most the
+				// ceiling + 1 byte ever enters memory, whatever happens to
+				// the file between checks.
+				const data = await io.readFileBounded(params.path, UPLOAD_MAX_BYTES + 1);
 				if (data.byteLength > UPLOAD_MAX_BYTES) {
-					// TOCTOU (roborev job 1651): the file grew or was replaced
-					// between stat and read — enforce the cap on the bytes
-					// actually read, not just the earlier stat.
 					throw new Error(
-						`${params.path} grew past the ${(UPLOAD_MAX_BYTES / (1024 * 1024)) | 0} MiB LunaRoute upload ceiling while reading`,
+						`${params.path} exceeds the ${(UPLOAD_MAX_BYTES / (1024 * 1024)) | 0} MiB LunaRoute upload ceiling`,
 					);
 				}
 				const sniffed = sniffImageMime(data);
