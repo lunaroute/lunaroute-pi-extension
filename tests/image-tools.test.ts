@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	_resetImageToolsState,
 	parseImageResultText,
+	readUntilLimit,
 	parseUploadResultText,
 	resolveImageDir,
 	UPLOAD_MAX_BYTES,
@@ -810,5 +811,39 @@ describe("abort-aware save (roborev job 1661)", () => {
 		const result = await tool.execute("t1", { prompt: "p", model: "m" } as never, controller.signal, undefined, {} as never);
 		expect(io.files.size).toBe(0);
 		expect((result.content[0] as { text?: string }).text).toContain("not saved locally");
+	});
+});
+
+describe("bounded read loop (roborev job 1663)", () => {
+	// readOnce that short-reads in 3-byte chunks — FileHandle.read may do this.
+	function shortReadingFile(content: Uint8Array) {
+		return async (buffer: Uint8Array, offset: number, length: number, position: number): Promise<number> => {
+			const take = Math.min(3, length); // never fills the request in one go
+			for (let i = 0; i < take && position + i < content.length; i++) {
+				buffer[offset + i] = content[position + i];
+			}
+			return Math.max(0, Math.min(take, content.length - position));
+		};
+	}
+
+	test("collects the whole file across short reads, up to the limit", async () => {
+		const content = new Uint8Array(10);
+		for (let i = 0; i < content.length; i++) content[i] = i;
+		const full = await readUntilLimit(shortReadingFile(content), 100);
+		expect(Array.from(full)).toEqual(Array.from(content)); // all 10 bytes
+		const capped = await readUntilLimit(shortReadingFile(content), 8);
+		expect(capped.length).toBe(8); // the bound holds
+		expect(Array.from(capped)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+	});
+
+	test("EOF (zero-byte read) stops the loop", async () => {
+		let calls = 0;
+		const eofFile = async (): Promise<number> => {
+			calls += 1;
+			return 0;
+		};
+		const out = await readUntilLimit(eofFile, 100);
+		expect(out.length).toBe(0);
+		expect(calls).toBe(1); // stopped immediately at EOF
 	});
 });

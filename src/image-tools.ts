@@ -215,20 +215,41 @@ export interface ImageIo {
 	readFileBounded(path: string, maxBytes: number): Promise<Uint8Array>;
 }
 
+/** Collect bytes via repeated positional reads until EOF or maxBytes.
+ * FileHandle.read may short-read before EOF (roborev job 1663) — a single
+ * read could truncate an oversize file into something that passes the size
+ * check, so the loop keeps reading until the file ends or the bound is hit.
+ * The buffer stays one fixed maxBytes allocation. */
+export async function readUntilLimit(
+	readOnce: (buffer: Uint8Array, offset: number, length: number, position: number) => Promise<number>,
+	maxBytes: number,
+): Promise<Uint8Array> {
+	const buffer = Buffer.alloc(maxBytes);
+	let total = 0;
+	while (total < maxBytes) {
+		const bytesRead = await readOnce(buffer, total, maxBytes - total, total);
+		if (bytesRead === 0) break; // EOF
+		total += bytesRead;
+	}
+	return buffer.subarray(0, total);
+}
+
 const defaultIo: ImageIo = {
 	// fs mkdir returns Promise<string | undefined>; the interface promises void.
 	mkdir: async (path, options) => {
 		await mkdir(path, options);
 	},
 	writeFile,
-	// Descriptor-based bounded read: one open, one positional read capped at
+	// Descriptor-based bounded read: one open, positional reads capped at
 	// maxBytes — the file's true size never dictates memory use.
 	readFileBounded: async (path, maxBytes) => {
 		const handle = await open(path, "r");
 		try {
-			const buffer = Buffer.alloc(maxBytes);
-			const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);
-			return buffer.subarray(0, bytesRead);
+			return await readUntilLimit(
+				(buffer, offset, length, position) =>
+					handle.read(buffer, offset, length, position).then((r) => r.bytesRead),
+				maxBytes,
+			);
 		} finally {
 			await handle.close();
 		}
