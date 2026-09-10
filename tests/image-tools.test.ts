@@ -160,6 +160,15 @@ function memoryIo(): ImageIo & { files: Map<string, Uint8Array> } {
 		writeFile: async (path, data) => {
 			files.set(path, data);
 		},
+		rename: async (from, to) => {
+			if (files.has(from)) {
+				files.set(to, files.get(from)!);
+				files.delete(from);
+			}
+		},
+		rm: async (path) => {
+			files.delete(path);
+		},
 		readFileBounded: async (path, maxBytes) => {
 			const bytes = files.get(path) ?? new Uint8Array();
 			return bytes.subarray(0, maxBytes);
@@ -845,5 +854,42 @@ describe("bounded read loop (roborev job 1663)", () => {
 		const out = await readUntilLimit(eofFile, 100);
 		expect(out.length).toBe(0);
 		expect(calls).toBe(1); // stopped immediately at EOF
+	});
+});
+
+describe("atomic save (roborev job 1665)", () => {
+	test("aborting during the write leaves neither the image nor a temp file", async () => {
+		const client = fakeClient([
+			{ type: "text", text: GENERATED_TEXT },
+			{ type: "image", data: Buffer.from("pngbytes").toString("base64"), mimeType: "image/png" },
+		]);
+		const controller = new AbortController();
+		const io = memoryIo();
+		const origWrite = io.writeFile.bind(io);
+		io.writeFile = async (path, data) => {
+			await origWrite(path, data); // the temp file lands on disk
+			controller.abort(); // cancellation arrives mid-write
+		};
+		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
+		const tool = buildGenerateImageTool({ client, mcpToolName: "generate_image", env: process.env, io });
+		const result = await tool.execute("t1", { prompt: "p", model: "m" } as never, controller.signal, undefined, {} as never);
+		expect(io.files.size).toBe(0); // no final image, no leftover temp
+		expect((result.content[0] as { text?: string }).text).toContain("not saved locally");
+	});
+
+	test("a failed rename cleans the temp file and reports not-saved", async () => {
+		const client = fakeClient([
+			{ type: "text", text: GENERATED_TEXT },
+			{ type: "image", data: Buffer.from("pngbytes").toString("base64"), mimeType: "image/png" },
+		]);
+		const io = memoryIo();
+		io.rename = async () => {
+			throw new Error("disk full");
+		};
+		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
+		const tool = buildGenerateImageTool({ client, mcpToolName: "generate_image", env: process.env, io });
+		const result = await tool.execute("t1", { prompt: "p", model: "m" } as never, AC(), undefined, {} as never);
+		expect(io.files.size).toBe(0); // temp cleaned, nothing final
+		expect((result.content[0] as { text?: string }).text).toContain("not saved locally");
 	});
 });

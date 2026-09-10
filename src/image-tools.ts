@@ -1,4 +1,5 @@
-import { mkdir, open, writeFile } from "node:fs/promises";
+import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { ExtensionAPI, ThemeColor, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -209,6 +210,10 @@ export interface ImageToolDetails {
 export interface ImageIo {
 	mkdir(path: string, options: { recursive: boolean }): Promise<void>;
 	writeFile(path: string, data: Uint8Array): Promise<void>;
+	/** Atomic rename (same-filesystem) for the temp-then-rename save. */
+	rename(from: string, to: string): Promise<void>;
+	/** Best-effort removal (temp cleanup). */
+	rm(path: string): Promise<void>;
 	/** Read at most maxBytes from the start of the file. The bound is
 	 * load-bearing: a path swapped for a huge file between checks must never
 	 * be fully loaded (roborev job 1659). */
@@ -240,6 +245,8 @@ const defaultIo: ImageIo = {
 		await mkdir(path, options);
 	},
 	writeFile,
+	rename,
+	rm,
 	// Descriptor-based bounded read: one open, positional reads capped at
 	// maxBytes — the file's true size never dictates memory use.
 	readFileBounded: async (path, maxBytes) => {
@@ -295,13 +302,28 @@ async function saveImage(
 ): Promise<string | undefined> {
 	if (!IMAGE_ID_PATTERN.test(id)) return undefined;
 	if (signal?.aborted) return undefined;
+	// Temp-then-rename (roborev job 1665): an abort landing mid-write (or a
+	// failed write) must leave neither a partial nor a leftover file — the
+	// final path only ever appears whole, via an atomic rename.
 	const path = join(dir, `${id}${extForFormat(format)}`);
-	await io.mkdir(dir, { recursive: true });
-	// Re-check before the write: an abort landing between the download
-	// resolving and this point must not leave a file behind (roborev job 1661).
-	if (signal?.aborted) return undefined;
-	await io.writeFile(path, bytes);
-	return path;
+	const tmp = `${path}.${randomUUID()}.tmp`;
+	try {
+		await io.mkdir(dir, { recursive: true });
+		// Re-check before the write: an abort landing between the download
+		// resolving and this point must not leave a file behind (roborev job
+		// 1661).
+		if (signal?.aborted) return undefined;
+		await io.writeFile(tmp, bytes);
+		if (signal?.aborted) {
+			await io.rm(tmp).catch(() => {});
+			return undefined;
+		}
+		await io.rename(tmp, path);
+		return path;
+	} catch {
+		await io.rm(tmp).catch(() => {});
+		return undefined;
+	}
 }
 
 function textParts(call: { content?: { type: string; text?: string }[] }): string {
