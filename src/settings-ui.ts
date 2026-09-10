@@ -86,6 +86,10 @@ export function createSettingChangeApplier(
 	const read = deps.read ?? readSettings;
 	const write = deps.write ?? writeSettings;
 	let settings = initialSettings;
+	// Image-tools apply generation (roborev job 1669): an on-apply parked at
+	// its key lookup must not resume past a newer toggle — the later apply
+	// supersedes the earlier one wholesale.
+	let imageToolsApplyGeneration = 0;
 
 	return async (id: string, newValue: string): Promise<void> => {
 		settings = { ...settings, [id]: newValue } as LunarouteSettings;
@@ -98,7 +102,18 @@ export function createSettingChangeApplier(
 		if (id === "searchProvider") return; // next web_search call reads it
 		try {
 			if (id === "webTools") await applyWebTools(pi, deps, ui, getApiKey, settings, newValue === "on");
-			if (id === "imageTools") await applyImageTools(pi, deps, ui, getApiKey, settings, newValue === "on");
+			if (id === "imageTools") {
+				const generation = ++imageToolsApplyGeneration;
+				await applyImageTools(
+					pi,
+					deps,
+					ui,
+					getApiKey,
+					settings,
+					newValue === "on",
+					() => generation === imageToolsApplyGeneration,
+				);
+			}
 			if (id === "mcp") await applyMcp(pi, deps, ui, getApiKey, newValue === "on");
 		} catch (err) {
 			// Never throw from a SettingsList change callback.
@@ -257,6 +272,7 @@ async function applyImageTools(
 	getApiKey: () => Promise<string | undefined>,
 	settings: LunarouteSettings,
 	on: boolean,
+	isCurrent: () => boolean = () => true,
 ): Promise<void> {
 	if (!on) {
 		const ours = getRegisteredImageToolNames();
@@ -270,6 +286,7 @@ async function applyImageTools(
 		return;
 	}
 	const key = await getApiKey();
+	if (!isCurrent()) return; // a later toggle superseded this apply while parked
 	if (!key) {
 		ui.notify("Not logged in — run /login lunaroute to enable image tools.", "info");
 		return;

@@ -553,3 +553,42 @@ describe("imageTools off during discovery supersedes (roborev job 1649)", () => 
 		}
 	});
 });
+
+describe("imageTools apply supersession (roborev job 1669)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetImageToolsState();
+	});
+
+	test("an on-apply superseded by a later off toggle never activates", async () => {
+		const { pi, getActive } = fakePi();
+		let resolveKey!: (key: string | undefined) => void;
+		const keyPromise = new Promise<string | undefined>((resolve) => {
+			resolveKey = resolve;
+		});
+		vi.stubGlobal(
+			"fetch",
+			mcpFetch({
+				initialize: () => ({}),
+				"notifications/initialized": () => undefined,
+				"tools/list": () => ({ tools: [{ name: "generate_image" }, { name: "upload_image" }] }),
+			}),
+		);
+		const ui = { notify: vi.fn() };
+		const applier = createSettingChangeApplier(pi, apierDeps(), ui, () => keyPromise, DEFAULT_SETTINGS);
+		try {
+			// The on-apply parks at the deferred key lookup…
+			const on = applier("imageTools", "on");
+			// …the user flips it off before the key resolves…
+			await applier("imageTools", "off");
+			resolveKey("lr_key");
+			await on;
+			// …so the stale on-apply must not register or activate anything.
+			expect(getActive()).not.toContain("generate_image");
+			expect(getActive()).not.toContain("upload_image");
+			expect(pi.registerTool).not.toHaveBeenCalled();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});
