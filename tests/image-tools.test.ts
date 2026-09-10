@@ -893,3 +893,25 @@ describe("atomic save (roborev job 1665)", () => {
 		expect((result.content[0] as { text?: string }).text).toContain("not saved locally");
 	});
 });
+
+describe("post-rename cancellation (roborev job 1667)", () => {
+	test("aborting during the rename removes the final image too", async () => {
+		const client = fakeClient([
+			{ type: "text", text: GENERATED_TEXT },
+			{ type: "image", data: Buffer.from("pngbytes").toString("base64"), mimeType: "image/png" },
+		]);
+		const controller = new AbortController();
+		const io = memoryIo();
+		io.rename = async (from, to) => {
+			controller.abort(); // cancellation lands while the rename is in flight
+			const data = io.files.get(from);
+			io.files.delete(from);
+			if (data) io.files.set(to, data);
+		};
+		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
+		const tool = buildGenerateImageTool({ client, mcpToolName: "generate_image", env: process.env, io });
+		const result = await tool.execute("t1", { prompt: "p", model: "m" } as never, controller.signal, undefined, {} as never);
+		expect(io.files.size).toBe(0); // neither the final image nor the temp remains
+		expect((result.content[0] as { text?: string }).text).toContain("not saved locally");
+	});
+});

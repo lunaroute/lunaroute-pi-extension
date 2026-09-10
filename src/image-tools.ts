@@ -319,6 +319,13 @@ async function saveImage(
 			return undefined;
 		}
 		await io.rename(tmp, path);
+		// The last window (roborev job 1667): an abort landing during the
+		// rename must not leave the completed file behind either — a
+		// cancelled call has no side effects, matching the not-saved note.
+		if (signal?.aborted) {
+			await io.rm(path).catch(() => {});
+			return undefined;
+		}
 		return path;
 	} catch {
 		await io.rm(tmp).catch(() => {});
