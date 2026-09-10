@@ -81,8 +81,10 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
         // session_start path may have skipped registration (no key then).
         // Fire-and-forget — registerWebTools never throws.
         void registerWebTools(pi, { key: creds.access, ...mcpDeps, settings }).catch(() => {});
-        // Same for the image tools (kata e30g).
-        void registerImageTools(pi, { key: creds.access, ...mcpDeps, settings }).catch(() => {});
+        // Same for the image tools (kata e30g) — settings re-read at the call
+        // site: several awaits separate this from the read at the top of the
+        // login flow, and a toggle in between must win (roborev job 1670).
+        void registerImageTools(pi, { key: creds.access, ...mcpDeps, settings: readSettings(process.env) }).catch(() => {});
         return creds;
       },
     },
@@ -153,8 +155,11 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
     // missing locally and offered by the hosted MCP server. Never throws.
     await registerWebTools(pi, { key, ...mcpDeps, settings });
     // First-class image tools (kata e30g): no local detection — the server's
-    // tools/list gates entitlement/policy. Never throws.
-    await registerImageTools(pi, { key, ...mcpDeps, settings });
+    // tools/list gates entitlement/policy. Never throws. Settings are read
+    // AT the call site: the key lookup above awaited, and a /lunaroute
+    // toggle landing in that window must not be bypassed by a stale "on"
+    // snapshot (roborev job 1670).
+    await registerImageTools(pi, { key, ...mcpDeps, settings: readSettings(process.env) });
   });
 
   pi.on("model_select", (event) => {

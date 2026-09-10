@@ -738,3 +738,33 @@ describe("model persistence and auto-select", () => {
     expect(setModel).not.toHaveBeenCalled();
   });
 });
+
+  test("a /lunaroute toggle landing during the key lookup is not bypassed (roborev job 1670)", async () => {
+    const { pi, registerProvider, handlers, registeredTools } = fakePi();
+    installFakeAdapter(fakeEventBus());
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    const dir = mkdtempSync(join(tmpdir(), "lr-toggle-"));
+    vi.stubEnv("PI_CODING_AGENT_DIR", dir);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "generate_image" }, { name: "upload_image" }] } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    lunarouteExtension(pi);
+    void registerProvider;
+    // The key lookup parks; the user toggles image tools off while it does.
+    let resolveKey!: (key: string | undefined) => void;
+    const keyPromise = new Promise<string | undefined>((resolve) => {
+      resolveKey = resolve;
+    });
+    const ctx = fakeContext({ modelRegistry: { getApiKeyForProvider: () => keyPromise } });
+    const started = handlers.get("session_start")?.({}, ctx);
+    writeFileSync(join(dir, "lunaroute.json"), JSON.stringify({ mcp: "on", webTools: "on", searchProvider: "server", imageTools: "off" }));
+    resolveKey("lr_key");
+    await started;
+    expect(registeredTools.filter((t) => t.name === "generate_image" || t.name === "upload_image")).toHaveLength(0);
+  });
