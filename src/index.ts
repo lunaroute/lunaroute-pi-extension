@@ -15,6 +15,7 @@ import { createRefreshModels } from "./discovery.js";
 import { disposeLunarouteMcp, isAlreadyRegisteredError, isLunarouteMcpConfigured, maybeShowAdapterHint, maybeShowConfiguredNotice, registerLunarouteMcp } from "./mcp.js";
 import { registerWebTools } from "./web-tools.js";
 import { registerImageTools } from "./image-tools.js";
+import { registerConvertTools } from "./convert-tools.js";
 import { mcpEnabled, readSettings } from "./settings.js";
 import { registerLunarouteSettingsCommand } from "./settings-ui.js";
 
@@ -85,6 +86,8 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
         // site: several awaits separate this from the read at the top of the
         // login flow, and a toggle in between must win (roborev job 1670).
         void registerImageTools(pi, { key: creds.access, ...mcpDeps, settings: readSettings(process.env) }).catch(() => {});
+        // And the convert tools (kata zpzt) — same call-site settings read.
+        void registerConvertTools(pi, { key: creds.access, ...mcpDeps, settings: readSettings(process.env) }).catch(() => {});
         return creds;
       },
     },
@@ -160,6 +163,8 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
     // toggle landing in that window must not be bypassed by a stale "on"
     // snapshot (roborev job 1670).
     await registerImageTools(pi, { key, ...mcpDeps, settings: readSettings(process.env) });
+    // First-class convert_document (kata zpzt): same call-site settings read.
+    await registerConvertTools(pi, { key, ...mcpDeps, settings: readSettings(process.env) });
   });
 
   pi.on("model_select", (event) => {

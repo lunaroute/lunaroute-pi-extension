@@ -15,6 +15,7 @@ import {
 	type SettingsCommandDeps,
 } from "../src/settings-ui.js";
 import { _resetImageToolsState, registerImageTools } from "../src/image-tools.js";
+import { _resetConvertToolsState, registerConvertTools } from "../src/convert-tools.js";
 import { _resetWebToolsState, registerWebTools, type FetchLike } from "../src/web-tools.js";
 
 // keyHint/getSettingsListTheme read pi's global theme — initialize like the host does.
@@ -108,6 +109,7 @@ function apierDeps(overrides: Partial<SettingsCommandDeps> = {}): SettingsComman
 beforeEach(() => {
 	vi.unstubAllEnvs();
 	_resetImageToolsState();
+	_resetConvertToolsState();
 	_resetWebToolsState();
 	_resetMcpState();
 	_setAdapterConfigLoader(async () => ({ mcpServers: {} }));
@@ -118,19 +120,20 @@ beforeEach(() => {
 // ============================================================================
 
 describe("buildSettingsItems", () => {
-	test("four rows with the spec'd ids, labels, and value cycles", () => {
+	test("five rows with the spec'd ids, labels, and value cycles", () => {
 		const items = buildSettingsItems(DEFAULT_SETTINGS);
-		expect(items.map((i) => i.id)).toEqual(["mcp", "webTools", "imageTools", "searchProvider"]);
+		expect(items.map((i) => i.id)).toEqual(["mcp", "webTools", "imageTools", "convertTools", "searchProvider"]);
 		expect(items[0]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[1]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[2]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
-		expect(items[3]).toMatchObject({ currentValue: "server", values: ["server", "brave", "exa", "kagi"] });
+		expect(items[3]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
+		expect(items[4]).toMatchObject({ currentValue: "server", values: ["server", "brave", "exa", "kagi"] });
 	});
 
 	test("reflects the current settings values", () => {
-		const settings: LunarouteSettings = { mcp: "off", webTools: "off", searchProvider: "kagi", imageTools: "on" };
+		const settings: LunarouteSettings = { mcp: "off", webTools: "off", searchProvider: "kagi", imageTools: "on", convertTools: "on" };
 		const items = buildSettingsItems(settings);
-		expect(items.map((i) => i.currentValue)).toEqual(["off", "off", "on", "kagi"]);
+		expect(items.map((i) => i.currentValue)).toEqual(["off", "off", "on", "on", "kagi"]);
 	});
 });
 
@@ -586,6 +589,69 @@ describe("imageTools apply supersession (roborev job 1669)", () => {
 			// …so the stale on-apply must not register or activate anything.
 			expect(getActive()).not.toContain("generate_image");
 			expect(getActive()).not.toContain("upload_image");
+			expect(pi.registerTool).not.toHaveBeenCalled();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});
+
+describe("convertTools applier (kata zpzt)", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		_resetConvertToolsState();
+	});
+
+	const CONVERT_FETCH = mcpFetch({
+		initialize: () => ({}),
+		"notifications/initialized": () => undefined,
+		"tools/list": () => ({ tools: [{ name: "convert_document" }] }),
+	});
+
+	test("off deactivates our tool and invalidates; on revalidates via the server", async () => {
+		const { pi, getActive } = fakePi();
+		await registerConvertTools(pi, { key: "lr_key", env: ENV, version: "0.6.0-test", sessionId: "s", fetchImpl: CONVERT_FETCH });
+		expect(getActive()).toContain("convert_document");
+		const ui = { notify: vi.fn() };
+		const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", DEFAULT_SETTINGS);
+		await applier("convertTools", "off");
+		expect(getActive()).not.toContain("convert_document");
+		expect(ui.notify).toHaveBeenCalledWith("LunaRoute convert tools disabled", "info");
+		vi.stubGlobal("fetch", CONVERT_FETCH);
+		try {
+			await applier("convertTools", "on");
+			expect(getActive()).toContain("convert_document");
+			expect(pi.registerTool).toHaveBeenCalledTimes(1); // no re-registration
+			expect(ui.notify).toHaveBeenCalledWith("LunaRoute convert tools enabled", "info");
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	test("on with nothing registered and no key → login hint", async () => {
+		const { pi } = fakePi();
+		const ui = { notify: vi.fn() };
+		const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => undefined, DEFAULT_SETTINGS);
+		await applier("convertTools", "on");
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("/login lunaroute"), "info");
+		expect(pi.registerTool).not.toHaveBeenCalled();
+	});
+
+	test("an on-apply superseded by a later off toggle never activates", async () => {
+		const { pi, getActive } = fakePi();
+		let resolveKey!: (key: string | undefined) => void;
+		const keyPromise = new Promise<string | undefined>((resolve) => {
+			resolveKey = resolve;
+		});
+		vi.stubGlobal("fetch", CONVERT_FETCH);
+		const ui = { notify: vi.fn() };
+		const applier = createSettingChangeApplier(pi, apierDeps(), ui, () => keyPromise, DEFAULT_SETTINGS);
+		try {
+			const on = applier("convertTools", "on");
+			await applier("convertTools", "off");
+			resolveKey("lr_key");
+			await on;
+			expect(getActive()).not.toContain("convert_document");
 			expect(pi.registerTool).not.toHaveBeenCalled();
 		} finally {
 			vi.unstubAllGlobals();

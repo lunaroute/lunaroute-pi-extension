@@ -12,6 +12,7 @@ import {
 } from "./mcp.js";
 import { readSettings, settingsPath, writeSettings, type LunarouteSettings } from "./settings.js";
 import { getRegisteredImageToolNames, invalidateImageToolRegistrations, registerImageTools } from "./image-tools.js";
+import { getRegisteredConvertToolNames, invalidateConvertToolRegistrations, registerConvertTools } from "./convert-tools.js";
 import { getRegisteredWebToolNames, registerWebTools } from "./web-tools.js";
 
 /** The `/lunaroute` settings command (kata bjy9): a pi-native SettingsList
@@ -56,6 +57,13 @@ export function buildSettingsItems(settings: LunarouteSettings): SettingItem[] {
 			values: ["on", "off"],
 		},
 		{
+			id: "convertTools",
+			label: "Convert tools",
+			description: "First-class convert_document (docx/pdf/xlsx/… → Markdown) backed by LunaRoute",
+			currentValue: settings.convertTools,
+			values: ["on", "off"],
+		},
+		{
 			id: "searchProvider",
 			label: "Search provider",
 			description: "Default provider for web_search; the model can still override per call",
@@ -90,6 +98,7 @@ export function createSettingChangeApplier(
 	// its key lookup must not resume past a newer toggle — the later apply
 	// supersedes the earlier one wholesale.
 	let imageToolsApplyGeneration = 0;
+	let convertToolsApplyGeneration = 0;
 
 	return async (id: string, newValue: string): Promise<void> => {
 		settings = { ...settings, [id]: newValue } as LunarouteSettings;
@@ -112,6 +121,18 @@ export function createSettingChangeApplier(
 					settings,
 					newValue === "on",
 					() => generation === imageToolsApplyGeneration,
+				);
+			}
+			if (id === "convertTools") {
+				const generation = ++convertToolsApplyGeneration;
+				await applyConvertTools(
+					pi,
+					deps,
+					ui,
+					getApiKey,
+					settings,
+					newValue === "on",
+					() => generation === convertToolsApplyGeneration,
 				);
 			}
 			if (id === "mcp") await applyMcp(pi, deps, ui, getApiKey, newValue === "on");
@@ -310,5 +331,50 @@ async function applyImageTools(
 		ui.notify("LunaRoute image tools unavailable from the server right now.", "warning");
 	} else {
 		ui.notify("LunaRoute image tools are not available for your organization.", "info");
+	}
+}
+
+/** Convert-tools live-apply (kata zpzt). Mirrors applyImageTools: off
+ * deactivates ours and invalidates in-flight registrations; on always
+ * delegates to registerConvertTools, which revalidates the server catalog. */
+async function applyConvertTools(
+	pi: ExtensionAPI,
+	deps: SettingsCommandDeps,
+	ui: { notify: NotifyFn },
+	getApiKey: () => Promise<string | undefined>,
+	settings: LunarouteSettings,
+	on: boolean,
+	isCurrent: () => boolean = () => true,
+): Promise<void> {
+	if (!on) {
+		const ours = getRegisteredConvertToolNames();
+		if (ours.size > 0) {
+			pi.setActiveTools(pi.getActiveTools().filter((name) => !ours.has(name)));
+		}
+		invalidateConvertToolRegistrations();
+		ui.notify("LunaRoute convert tools disabled", "info");
+		return;
+	}
+	const key = await getApiKey();
+	if (!isCurrent()) return; // a later toggle superseded this apply while parked
+	if (!key) {
+		ui.notify("Not logged in — run /login lunaroute to enable convert tools.", "info");
+		return;
+	}
+	const result = await registerConvertTools(pi, {
+		key,
+		env: deps.env,
+		version: deps.version,
+		sessionId: deps.sessionId,
+		settings,
+	});
+	if (result.convert === "registered") {
+		ui.notify("LunaRoute convert tools enabled", "info");
+	} else if (result.convert === "skipped-existing") {
+		ui.notify("Another extension already provides convert_document — LunaRoute's stays off.", "info");
+	} else if (result.error !== undefined) {
+		ui.notify("LunaRoute convert tools unavailable from the server right now.", "warning");
+	} else {
+		ui.notify("LunaRoute convert tools are not available for your organization.", "info");
 	}
 }

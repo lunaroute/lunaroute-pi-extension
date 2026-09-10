@@ -294,8 +294,9 @@ export async function spillFullOutput(
 		tmpdir: () => string;
 		randomUUID: () => string;
 	} = { writeFile, tmpdir, randomUUID },
+	file: { prefix: string; ext: string } = { prefix: "lunaroute-web", ext: "txt" },
 ): Promise<string> {
-	const path = join(io.tmpdir(), `lunaroute-web-${io.randomUUID()}.txt`);
+	const path = join(io.tmpdir(), `${file.prefix}-${io.randomUUID()}.${file.ext}`);
 	await io.writeFile(path, text);
 	return path;
 }
