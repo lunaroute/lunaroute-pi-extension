@@ -541,7 +541,10 @@ describe("roborev job 1713: fallback dedup, abort-safe pre-existing files, temp 
 		const tool = buildConvertTool({ client, mcpToolName: "convert_document", env: process.env, io, fetchImpl });
 		const result = await tool.execute("t1", { path: "/home/u/report.docx" } as never, controller.signal, undefined, {} as never);
 		expect(io.files.get("/tmp/agent/lunaroute-docs/report.md")).toEqual(preExisting); // untouched
-		expect((result.content[0] as { text?: string }).text).not.toContain("saved to:");
+		// Never-delete-after-rename (roborev 1727): the save completed before
+		// the cancellation landed, so the result reports it honestly (pi
+		// discards cancelled-call results anyway).
+		expect((result.content[0] as { text?: string }).text).toContain("saved to:");
 	});
 
 	test("a failed rename cleans the real temp file (no .tmp leak)", async () => {
@@ -637,8 +640,48 @@ describe("roborev job 1715: text-upload policy + concurrent-writer-safe abort cl
 		};
 		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
 		const tool = buildConvertTool({ client, mcpToolName: "convert_document", env: process.env, io, fetchImpl });
+		await tool.execute("t1", { path: "/home/u/report.docx" } as never, controller.signal, undefined, {} as never);
+		expect(io.files.get("/tmp/agent/lunaroute-docs/report.md")).toEqual(otherWriter); // preserved — never deleted by another invocation's abort
+	});
+});
+
+describe("roborev job 1727: windows separators + never-delete-after-rename", () => {
+	test("windows-style hidden paths cannot launder text past the guard", async () => {
+		const client = fakeClient([{ type: "text", text: "# md\n" }]);
+		const io = memoryIo();
+		// A .csv-named secrets file inside a backslash-hidden directory: the
+		// extension check passes, so only the hidden-path guard can stop it.
+		io.files.set("C:\\Users\\me\\.ssh\\config.csv", Buffer.from("Host *, x\n", "utf8"));
+		const tool = buildConvertTool({ client, mcpToolName: "convert_document", env: {}, io });
+		await expect(tool.execute("t1", { path: "C:\\Users\\me\\.ssh\\config.csv" } as never, AC(), undefined, {} as never)).rejects.toThrow(/csv/i);
+		expect(client.callTool).not.toHaveBeenCalled();
+	});
+
+	test("post-rename abort keeps the completed document and reports it honestly (never deletes)", async () => {
+		const client = {
+			listTools: vi.fn(async () => [] as string[]),
+			callTool: vi.fn(async (_name: string, args: Record<string, unknown>) => {
+				if (args.embed) {
+					return { content: [{ type: "text", text: "output_too_large: try embed: false" }], isError: true };
+				}
+				return { content: [{ type: "text", text: "url: https://storage.example.com/docs/doc_01X?sig=abc (link expires 2026-09-17T00:00:00Z)" }], isError: false };
+			}),
+		};
+		const io = memoryIo();
+		io.files.set("/home/u/report.docx", Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(32)]));
+		const controller = new AbortController();
+		const fetchImpl = vi.fn(async () => new Response("# ours\n", { status: 200 }));
+		const origRename = io.rename.bind(io);
+		io.rename = async (from: string, to: string) => {
+			await origRename(from, to);
+			controller.abort(); // cancellation lands after the rename completed
+		};
+		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
+		const tool = buildConvertTool({ client, mcpToolName: "convert_document", env: process.env, io, fetchImpl });
 		const result = await tool.execute("t1", { path: "/home/u/report.docx" } as never, controller.signal, undefined, {} as never);
-		expect(io.files.get("/tmp/agent/lunaroute-docs/report.md")).toEqual(otherWriter); // preserved
-		expect((result.content[0] as { text?: string }).text).not.toContain("saved to:");
+		// The completed document is kept and reported — never deleted.
+		expect(io.files.get("/tmp/agent/lunaroute-docs/report.md")).toEqual(Buffer.from("# ours\n"));
+		expect((result.content[0] as { text?: string }).text).toContain("saved to:");
+		expect((result.details as { path?: string }).path).toBe("/tmp/agent/lunaroute-docs/report.md");
 	});
 });

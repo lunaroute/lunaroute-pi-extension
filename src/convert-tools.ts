@@ -181,21 +181,13 @@ async function saveDocument(
 			return undefined;
 		}
 		await io.rename(finalTmp, finalPath);
-		if (signal?.aborted) {
-			// Post-rename cancellation only removes what is still OURS: a
-			// pre-existing identical document is the user's file, and a
-			// concurrent writer may have replaced the final path since our
-			// rename — the file is only removed when it still matches the
-			// bytes this invocation wrote (roborev 1715; shared <basename>.md
-			// names are not unique like the image tools' img_ ids).
-			if (!preExisting) {
-				const current = await io.readFileBounded(finalPath, bytes.byteLength + 1).catch(() => undefined);
-				if (current !== undefined && buffersEqual(current, bytes)) {
-					await io.rm(finalPath).catch(() => {});
-				}
-			}
-			return undefined;
-		}
+		// The save completed before any cancellation that lands here: the
+		// document is established and reported honestly — NEVER deleted.
+		// Deleting could remove a concurrent identical writer's output
+		// (content equality does not prove ownership, roborev 1727), and
+		// unlike the image tools' unique img_ ids, document names are shared;
+		// the file is trivially reproducible by re-converting. The
+		// pre-rename checks above remain the abort boundary.
 		return finalPath;
 	} catch {
 		if (finalTmp !== undefined) {
@@ -265,7 +257,10 @@ export function buildConvertTool(deps: ConvertToolBuildDeps) {
 					// path with an explicit .csv filename. Dotfiles, keys,
 					// configs, and source files stay local; binary formats are
 					// unaffected (magic sniffed above).
-					const pathBase = basename(params.path);
+					// Separators are normalized first so Windows-style hidden
+					// paths cannot launder past the guard (roborev 1727).
+					const normalizedPath = params.path.replace(/\\/g, "/");
+					const pathBase = basename(normalizedPath);
 					const ext = (name: string): string => {
 						const dot = name.lastIndexOf(".");
 						return dot > 0 ? name.slice(dot).toLowerCase() : "";
@@ -275,7 +270,7 @@ export function buildConvertTool(deps: ConvertToolBuildDeps) {
 					const claimedCsv = claimExt === ".csv" && (pathExt === ".csv" || pathExt === "");
 					// Hidden path components (dotfiles, .ssh/.aws/…) never
 					// leave the machine as text, whatever they claim.
-					if (!claimedCsv || pathBase.startsWith(".") || /(^|\/)\./.test(params.path)) {
+					if (!claimedCsv || pathBase.startsWith(".") || /(^|\/)\./.test(normalizedPath)) {
 						throw new Error(
 							`${params.path} is plain text — only .csv files are converted as text (binary formats are detected by content)`,
 						);
