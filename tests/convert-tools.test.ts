@@ -568,3 +568,77 @@ describe("roborev job 1713: fallback dedup, abort-safe pre-existing files, temp 
 		expect((result.content[0] as { text?: string }).text).toContain("could not be saved locally");
 	});
 });
+
+describe("roborev job 1715: text-upload policy + concurrent-writer-safe abort cleanup", () => {
+	const LINK_TEXT = "url: https://storage.example.com/docs/doc_01X?sig=abc (link expires 2026-09-17T00:00:00Z)";
+
+	function fallbackClient() {
+		return {
+			listTools: vi.fn(async () => [] as string[]),
+			callTool: vi.fn(async (_name: string, args: Record<string, unknown>) => {
+				if (args.embed) {
+					return { content: [{ type: "text", text: "output_too_large: try embed: false" }], isError: true };
+				}
+				return { content: [{ type: "text", text: LINK_TEXT }], isError: false };
+			}),
+		};
+	}
+
+	test("text is only converted with a .csv claim; dotfiles and other extensions are rejected locally", async () => {
+		const client = fakeClient([{ type: "text", text: "# md\n" }]);
+		const io = memoryIo();
+		const tool = buildConvertTool({ client, mcpToolName: "convert_document", env: {}, io });
+		// .csv path → accepted.
+		io.files.set("/home/u/data.csv", Buffer.from("a,b\n1,2\n", "utf8"));
+		await tool.execute("t1", { path: "/home/u/data.csv" } as never, AC(), undefined, {} as never);
+		expect(client.callTool).toHaveBeenCalledTimes(1);
+		// extensionless path + explicit .csv filename → accepted.
+		io.files.set("/home/u/download", Buffer.from("a,b\n1,2\n", "utf8"));
+		await tool.execute("t1", { path: "/home/u/download", filename: "report.csv" } as never, AC(), undefined, {} as never);
+		expect(client.callTool).toHaveBeenCalledTimes(2);
+		// secrets stay on this machine: dotfiles, keys, source, wrong extensions.
+		for (const p of ["/home/u/.env", "/home/u/id_rsa", "/home/u/.ssh/config", "/home/u/notes.txt", "/home/u/main.ts"]) {
+			io.files.set(p, Buffer.from("some text, with a comma\n", "utf8"));
+			await expect(tool.execute("t1", { path: p } as never, AC(), undefined, {} as never)).rejects.toThrow(/csv/i);
+		}
+		expect(client.callTool).toHaveBeenCalledTimes(2); // nothing new left the machine
+	});
+
+	test("an explicit .csv claim cannot launder an extensionless-but-named file", async () => {
+		const client = fallbackClient();
+		const io = memoryIo();
+		io.files.set("/home/u/.aws/credentials", Buffer.from("[default]\naws_access_key_id=SECRET, x\n", "utf8"));
+		const tool = buildConvertTool({ client, mcpToolName: "convert_document", env: {}, io });
+		await expect(tool.execute("t1", { path: "/home/u/.aws/credentials", filename: "report.csv" } as never, AC(), undefined, {} as never)).rejects.toThrow(/csv/i);
+		expect(client.callTool).not.toHaveBeenCalled();
+	});
+
+	test("binary formats are unaffected by the text policy (magic wins over any name)", async () => {
+		const client = fallbackClient();
+		const io = memoryIo();
+		io.files.set("/home/u/renamed-noext", Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(32)]));
+		const tool = buildConvertTool({ client, mcpToolName: "convert_document", env: {}, io });
+		await tool.execute("t1", { path: "/home/u/renamed-noext" } as never, AC(), undefined, {} as never);
+		expect(client.callTool).toHaveBeenCalledWith("convert_document", expect.objectContaining({ filename: "renamed-noext" }), expect.anything());
+	});
+
+	test("post-rename abort never removes a concurrent writer's output", async () => {
+		const client = fallbackClient();
+		const io = memoryIo();
+		io.files.set("/home/u/report.docx", Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(32)]));
+		const controller = new AbortController();
+		const fetchImpl = vi.fn(async () => new Response("# ours\n", { status: 200 }));
+		const otherWriter = Buffer.from("# a concurrent invocation's output\n");
+		const origRename = io.rename.bind(io);
+		io.rename = async (from: string, to: string) => {
+			await origRename(from, to); // our rename lands
+			io.files.set(to, otherWriter); // …then a concurrent writer overwrites…
+			controller.abort(); // …then cancellation arrives
+		};
+		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
+		const tool = buildConvertTool({ client, mcpToolName: "convert_document", env: process.env, io, fetchImpl });
+		const result = await tool.execute("t1", { path: "/home/u/report.docx" } as never, controller.signal, undefined, {} as never);
+		expect(io.files.get("/tmp/agent/lunaroute-docs/report.md")).toEqual(otherWriter); // preserved
+		expect((result.content[0] as { text?: string }).text).not.toContain("saved to:");
+	});
+});

@@ -182,12 +182,17 @@ async function saveDocument(
 		}
 		await io.rename(finalTmp, finalPath);
 		if (signal?.aborted) {
-			// Post-rename cancellation only removes what WE introduced: a
-			// pre-existing identical document is the user's file, not ours,
-			// and shared <basename>.md names are not unique like img_ ids
-			// (roborev 1713 — the e30g image rule does not carry over).
+			// Post-rename cancellation only removes what is still OURS: a
+			// pre-existing identical document is the user's file, and a
+			// concurrent writer may have replaced the final path since our
+			// rename — the file is only removed when it still matches the
+			// bytes this invocation wrote (roborev 1715; shared <basename>.md
+			// names are not unique like the image tools' img_ ids).
 			if (!preExisting) {
-				await io.rm(finalPath).catch(() => {});
+				const current = await io.readFileBounded(finalPath, bytes.byteLength + 1).catch(() => undefined);
+				if (current !== undefined && buffersEqual(current, bytes)) {
+					await io.rm(finalPath).catch(() => {});
+				}
 			}
 			return undefined;
 		}
@@ -253,6 +258,29 @@ export function buildConvertTool(deps: ConvertToolBuildDeps) {
 					);
 				}
 				filename ??= basename(params.path);
+				if (format.kind === "text") {
+					// Text-upload policy (roborev 1715): the server only converts
+					// CSV as text, so a text file only leaves the machine when it
+					// is claimed as .csv — from a .csv path, or an extensionless
+					// path with an explicit .csv filename. Dotfiles, keys,
+					// configs, and source files stay local; binary formats are
+					// unaffected (magic sniffed above).
+					const pathBase = basename(params.path);
+					const ext = (name: string): string => {
+						const dot = name.lastIndexOf(".");
+						return dot > 0 ? name.slice(dot).toLowerCase() : "";
+					};
+					const pathExt = ext(pathBase);
+					const claimExt = ext(filename);
+					const claimedCsv = claimExt === ".csv" && (pathExt === ".csv" || pathExt === "");
+					// Hidden path components (dotfiles, .ssh/.aws/…) never
+					// leave the machine as text, whatever they claim.
+					if (!claimedCsv || pathBase.startsWith(".") || /(^|\/)\./.test(params.path)) {
+						throw new Error(
+							`${params.path} is plain text — only .csv files are converted as text (binary formats are detected by content)`,
+						);
+					}
+				}
 				args = {
 					data: Buffer.from(data).toString("base64"),
 					filename,
