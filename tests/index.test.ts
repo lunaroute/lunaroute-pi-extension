@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { LUNAROUTE_PROVIDER, firstRunHint } from "../src/lunaroute.js";
 import { _resetImageToolsState } from "../src/image-tools.js";
+import { _resetConvertToolsState } from "../src/convert-tools.js";
 import { MCP_CONFIGURED_NOTICE, MCP_INSTALL_HINT, MCP_RUNTIME_REGISTER_EVENT, _resetMcpState, _setAdapterConfigLoader, type McpRuntimeRegistrationRequest } from "../src/mcp.js";
 import lunarouteExtension from "../src/index.js";
 
@@ -352,7 +353,7 @@ describe("pi extension v2 wiring", () => {
     // The only server traffic is the image-tools discovery (initialize +
     // tools/list), never a web-tools registration attempt.
     const methods = fetchMock.mock.calls.map(([, init]) => (JSON.parse(String(init?.body)) as { method: string }).method);
-    expect(methods).toEqual(["initialize", "tools/list"]);
+    expect(methods).toEqual(["initialize", "tools/list", "initialize", "tools/list"]);
     expect(methods.filter((m) => m === "tools/call")).toHaveLength(0);
   });
 
@@ -769,4 +770,26 @@ describe("model persistence and auto-select", () => {
     resolveKey("lr_key");
     await started;
     expect(registeredTools.filter((t) => t.name === "generate_image" || t.name === "upload_image")).toHaveLength(0);
+  });
+
+  test("session_start registers convert_document when the server offers it (kata zpzt)", async () => {
+    _resetConvertToolsState();
+    const { pi, registerProvider, handlers, registeredTools } = fakePi();
+    installFakeAdapter(fakeEventBus());
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubEnv("PI_CODING_AGENT_DIR", mkdtempSync(join(tmpdir(), "lr-convert-")));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "convert_document" }] } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    lunarouteExtension(pi);
+    void registerProvider;
+    const ctx = fakeContext({ modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") } });
+    await handlers.get("session_start")?.({}, ctx);
+    expect(registeredTools.map((t) => t.name)).toContain("convert_document");
   });

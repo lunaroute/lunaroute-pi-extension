@@ -26,12 +26,13 @@ jobs:
       - name: Assert npm pack file list
         run: |
           set -euo pipefail
-          # The packed file list must be exactly these 11 files — no test files,
+          # The packed file list must be exactly these 12 files — no test files,
           # no missing source files. Catches a `files`-allowlist regression or
           # a dropped/added source file.
           expected='LICENSE
           README.md
           package.json
+          src/convert-tools.ts
           src/discovery.ts
           src/image-tools.ts
           src/index.ts
@@ -54,7 +55,7 @@ jobs:
           echo "--- actual ---";   printf '%s\n' "$actual"
 
           if ! diff -u <(printf '%s\n' "$expected" | sort -u) <(printf '%s\n' "$actual"); then
-            echo "ERROR: npm pack file list does not match the expected 11 files." >&2
+            echo "ERROR: npm pack file list does not match the expected 12 files." >&2
             echo "If a source file was added/removed, update the expected list AND package.json files." >&2
             exit 1
           fi

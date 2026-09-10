@@ -239,7 +239,7 @@ export async function readUntilLimit(
 	return buffer.subarray(0, total);
 }
 
-const defaultIo: ImageIo = {
+export const defaultIo: ImageIo = {
 	// fs mkdir returns Promise<string | undefined>; the interface promises void.
 	mkdir: async (path, options) => {
 		await mkdir(path, options);
@@ -718,7 +718,7 @@ export function _resetImageToolsState(): void {
 
 /** A stable facade delegating to the current client — captured by tool
  * closures at registration time, while the credentials behind it rotate. */
-function delegatingClient(ref: { client?: LunarouteMcpClient }): LunarouteMcpClient {
+export function delegatingClient(ref: { client?: LunarouteMcpClient }): LunarouteMcpClient {
 	const notConnected = () => Promise.reject(new Error("LunaRoute image tools: not connected"));
 	return {
 		callTool: (name, args, signal) => ref.client?.callTool(name, args, signal) ?? notConnected(),

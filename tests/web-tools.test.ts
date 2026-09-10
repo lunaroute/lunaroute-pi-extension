@@ -550,7 +550,7 @@ describe("registerWebTools", () => {
 		const fetchImpl = vi.fn();
 		const result = await registerWebTools(pi, {
 			...REG_DEPS,
-			settings: { mcp: "on", webTools: "off", searchProvider: "server", imageTools: "on" },
+			settings: { mcp: "on", webTools: "off", searchProvider: "server", imageTools: "on", convertTools: "on" },
 			fetchImpl: fetchImpl as unknown as FetchLike,
 		});
 		expect(result).toEqual({ webSearch: "skipped-disabled", webFetch: "skipped-disabled" });
@@ -564,7 +564,7 @@ describe("registerWebTools", () => {
 		const result = await registerWebTools(pi, {
 			...REG_DEPS,
 			env: { LUNAROUTE_WEB_TOOLS: "off" },
-			settings: { mcp: "on", webTools: "on", searchProvider: "server", imageTools: "on" },
+			settings: { mcp: "on", webTools: "on", searchProvider: "server", imageTools: "on", convertTools: "on" },
 			fetchImpl: fetchImpl as unknown as FetchLike,
 		});
 		expect(result.webSearch).toBe("skipped-disabled");

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { LUNAROUTE_ENV_IMAGE_TOOLS, LUNAROUTE_ENV_WEB_TOOLS, agentDirFromEnv } from "./lunaroute.js";
+import { LUNAROUTE_ENV_CONVERT_TOOLS, LUNAROUTE_ENV_IMAGE_TOOLS, LUNAROUTE_ENV_WEB_TOOLS, agentDirFromEnv } from "./lunaroute.js";
 
 /** User-facing settings persisted at `<agentDir>/lunaroute.json` (kata bjy9).
  *
@@ -20,6 +20,7 @@ export interface LunarouteSettings {
   webTools: Toggle;
   searchProvider: SearchProviderSetting;
   imageTools: Toggle;
+  convertTools: Toggle;
 }
 
 export const DEFAULT_SETTINGS: LunarouteSettings = {
@@ -27,6 +28,7 @@ export const DEFAULT_SETTINGS: LunarouteSettings = {
   webTools: "on",
   searchProvider: "server",
   imageTools: "on",
+  convertTools: "on",
 };
 
 /** Static v1 list; the server may support more, the TUI offers these. */
@@ -90,6 +92,7 @@ export function readSettings(env: NodeJS.ProcessEnv, io: SettingsIo = defaultIo)
     mcp: parseToggle(obj.mcp, DEFAULT_SETTINGS.mcp),
     webTools: parseToggle(obj.webTools, DEFAULT_SETTINGS.webTools),
     imageTools: parseToggle(obj.imageTools, DEFAULT_SETTINGS.imageTools),
+    convertTools: parseToggle(obj.convertTools, DEFAULT_SETTINGS.convertTools),
     searchProvider: parseSearchProvider(obj.searchProvider),
   };
 }
@@ -125,6 +128,15 @@ export function imageToolsEnabled(env: NodeJS.ProcessEnv, settings: LunarouteSet
   const v = env[LUNAROUTE_ENV_IMAGE_TOOLS];
   if (v === "off" || v === "0" || v === "false") return false;
   return settings.imageTools === "on";
+}
+
+/** Convert tools enabled? Same contract as webToolsEnabled/imageToolsEnabled
+ * — the env escape hatch only ever disables; the file is the user knob
+ * (kata zpzt). */
+export function convertToolsEnabled(env: NodeJS.ProcessEnv, settings: LunarouteSettings): boolean {
+  const v = env[LUNAROUTE_ENV_CONVERT_TOOLS];
+  if (v === "off" || v === "0" || v === "false") return false;
+  return settings.convertTools === "on";
 }
 
 /** MCP registration enabled? (The user-config defer rule is orthogonal and

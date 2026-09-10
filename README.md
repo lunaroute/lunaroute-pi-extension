@@ -156,6 +156,33 @@ the web tools, no `pi-mcp-adapter` install required.
 - **Kill switch.** `/lunaroute` → *Image tools* toggle, or
   `LUNAROUTE_IMAGE_TOOLS=off`. Logged out: nothing registers (silent).
 
+## Convert tools
+
+When you are logged in, the extension registers a first-class
+`convert_document` Pi tool backed by the hosted LunaRoute MCP server —
+documents (Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV, PDF) and
+raster images (OCR'd) become Markdown the model can work with.
+
+- **Inputs.** A local `path` (the extension reads and base64s it) or an
+  http(s) `url`; `filename` is derived from the path and can be set
+  explicitly (required for CSV); `ocr: true` runs the configured OCR
+  backend on scanned PDFs (the server answers `needs_ocr` when a scan
+  requires it — retry with `ocr: true`).
+- **Format guard.** Binary formats are magic-sniffed locally (ZIP-family,
+  PDF, RTF, images) and text must be valid UTF-8 — unrecognized input is
+  rejected before any bytes leave the machine.
+- **Output.** Markdown comes back inline (truncated per pi's tool rules,
+  spilled to a temp `.md` for big documents). When the server reports
+  `output_too_large`, the tool automatically retries with the
+  stored-artifact path and saves the full markdown to a per-installation
+  folder — `LUNAROUTE_DOCS_DIR` (default `<agentDir>/lunaroute-docs`) —
+  returning the path and a head. Note: with the server's stock size caps
+  this fallback only succeeds on deployments that raise
+  `MCP_DOC_MAX_OUTPUT_BYTES` above the embed cap; otherwise the error is
+  surfaced cleanly.
+- **Kill switch.** `/lunaroute` → *Convert tools* toggle, or
+  `LUNAROUTE_CONVERT_TOOLS=off`.
+
 ## Settings
 
 Run `/lunaroute` in Pi to open the settings UI (interactive mode):
@@ -168,11 +195,13 @@ Run `/lunaroute` in Pi to open the settings UI (interactive mode):
   used for every `web_search`; the model can still override it per call.
 - **Image tools** — on/off. Off removes `generate_image` / `edit_image` /
   `upload_image` immediately; on restores them without a restart.
+- **Convert tools** — on/off. Off removes `convert_document` immediately;
+  on restores it without a restart (revalidating the server catalog).
 
 Settings persist in `~/.pi/agent/lunaroute.json`:
 
 ```json
-{ "mcp": "on", "webTools": "on", "searchProvider": "server", "imageTools": "on" }
+{ "mcp": "on", "webTools": "on", "searchProvider": "server", "imageTools": "on", "convertTools": "on" }
 ```
 
 Missing keys fall back to these defaults (which equal the pre-settings
@@ -193,6 +222,8 @@ for dev/staging via environment variables before starting Pi:
 | `LUNAROUTE_MCP_URL` | `https://mcp.lunaroute.com/mcp` | Hosted MCP server URL registered with pi-mcp-adapter |
 | `LUNAROUTE_IMAGE_DIR` | `<agentDir>/lunaroute-images` | Where generated/edited images are saved (kata e30g) |
 | `LUNAROUTE_IMAGE_TOOLS` | *(unset)* | Set to `off`/`0`/`false` to disable the first-class image tools |
+| `LUNAROUTE_DOCS_DIR` | `<agentDir>/lunaroute-docs` | Where oversized converted documents are saved (kata zpzt) |
+| `LUNAROUTE_CONVERT_TOOLS` | *(unset)* | Set to `off`/`0`/`false` to disable the first-class convert_document tool |
 
 ## Troubleshooting
 

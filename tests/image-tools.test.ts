@@ -376,7 +376,7 @@ describe("registerImageTools", () => {
 		const fetchImpl = mcpFetch({}, log);
 		const registration = await registerImageTools(pi, {
 			key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl,
-			settings: { mcp: "on", webTools: "on", searchProvider: "server", imageTools: "off" },
+			settings: { mcp: "on", webTools: "on", searchProvider: "server", imageTools: "off", convertTools: "on" },
 		});
 		expect(registration).toMatchObject({ generateImage: "skipped-disabled", editImage: "skipped-disabled", uploadImage: "skipped-disabled" });
 		expect(registered).toHaveLength(0);
@@ -701,7 +701,7 @@ describe("server-id validation + disable-during-discovery (roborev job 1649)", (
 		// The user disables image tools while the catalog fetch is in flight.
 		const off = await registerImageTools(pi, {
 			key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: deferredFetch as never,
-			settings: { mcp: "on", webTools: "on", searchProvider: "server", imageTools: "off" },
+			settings: { mcp: "on", webTools: "on", searchProvider: "server", imageTools: "off", convertTools: "on" },
 		});
 		expect(off.generateImage).toBe("skipped-disabled");
 		resolveA();
