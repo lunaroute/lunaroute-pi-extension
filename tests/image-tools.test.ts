@@ -943,3 +943,28 @@ describe("bounded signed-url download (roborev job 1672)", () => {
 		expect(Buffer.from(bytes!).toString()).toBe("abc");
 	});
 });
+
+describe("isError results are failures (roborev job 1694)", () => {
+	test("generate: an isError MCP result rejects with the server's text, saves nothing", async () => {
+		const client = {
+			listTools: vi.fn(async () => [] as string[]),
+			callTool: vi.fn(async () => ({ content: [{ type: "text", text: "image_generation_disabled: quota exceeded" }], isError: true })),
+		};
+		const io = memoryIo();
+		vi.stubEnv("PI_CODING_AGENT_DIR", "/tmp/agent");
+		const tool = buildGenerateImageTool({ client, mcpToolName: "generate_image", env: process.env, io });
+		await expect(tool.execute("t1", { prompt: "p", model: "m" } as never, AC(), undefined, {} as never)).rejects.toThrow(/quota exceeded/);
+		expect(io.files.size).toBe(0);
+	});
+
+	test("upload: an isError MCP result rejects instead of appending the edit hint", async () => {
+		const client = {
+			listTools: vi.fn(async () => [] as string[]),
+			callTool: vi.fn(async () => ({ content: [{ type: "text", text: "image_too_large: the uploaded image exceeds the configured byte ceiling" }], isError: true })),
+		};
+		const io = memoryIo();
+		io.files.set("/home/u/cat.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]));
+		const tool = buildUploadImageTool({ client, mcpToolName: "upload_image", env: process.env, io });
+		await expect(tool.execute("t1", { path: "/home/u/cat.png" } as never, AC(), undefined, {} as never)).rejects.toThrow(/image_too_large/);
+	});
+});

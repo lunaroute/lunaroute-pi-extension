@@ -478,11 +478,18 @@ export function buildEditImageTool(deps: ImageToolBuildDeps) {
  * signed url), and shape the text + details. Never rewrites the server's own
  * lines — only appends the local-path line. */
 async function finishImageCall(
-	call: { content?: { type: string; text?: string; data?: string }[] },
+	call: { content?: { type: string; text?: string; data?: string }[]; isError?: boolean },
 	deps: ImageToolBuildDeps,
 	onUpdate?: (update: { content: { type: "text"; text: string }[]; details: ImageToolDetails }) => void,
 	signal?: AbortSignal,
 ): Promise<{ content: { type: "text"; text: string }[]; details: ImageToolDetails }> {
+	// Our own client throws on isError, but the builder accepts any
+	// LunarouteMcpClient — a host-provided one may hand it back raw. An error
+	// result must fail the tool, not parse into "not saved locally" plus
+	// success-looking guidance (roborev job 1694).
+	if (call.isError) {
+		throw new Error(textParts(call) || `MCP tool ${deps.mcpToolName} returned an error`);
+	}
 	const text = textParts(call);
 	const parsed = parseImageResultText(text);
 	let bytes: Uint8Array | undefined;
@@ -603,6 +610,11 @@ export function buildUploadImageTool(deps: ImageToolBuildDeps) {
 			}
 			onUpdate?.({ content: [{ type: "text", text: "Uploading image to LunaRoute…" }], details: {} });
 			const call = await deps.client.callTool(deps.mcpToolName, args, signal);
+			if (call.isError) {
+				// Same defense as finishImageCall (roborev job 1694): an error
+				// result fails the tool instead of gaining the edit hint.
+				throw new Error(textParts(call) || `MCP tool ${deps.mcpToolName} returned an error`);
+			}
 			const text = textParts(call);
 			const parsed = parseUploadResultText(text);
 			const details: ImageToolDetails = {

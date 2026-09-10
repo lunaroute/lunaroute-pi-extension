@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { LUNAROUTE_PROVIDER, firstRunHint } from "../src/lunaroute.js";
+import { _resetImageToolsState } from "../src/image-tools.js";
 import { MCP_CONFIGURED_NOTICE, MCP_INSTALL_HINT, MCP_RUNTIME_REGISTER_EVENT, _resetMcpState, _setAdapterConfigLoader, type McpRuntimeRegistrationRequest } from "../src/mcp.js";
 import lunarouteExtension from "../src/index.js";
 
@@ -740,6 +741,7 @@ describe("model persistence and auto-select", () => {
 });
 
   test("a /lunaroute toggle landing during the key lookup is not bypassed (roborev job 1670)", async () => {
+    _resetImageToolsState(); // module state from earlier tests must not mask the regression (roborev job 1694)
     const { pi, registerProvider, handlers, registeredTools } = fakePi();
     installFakeAdapter(fakeEventBus());
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
