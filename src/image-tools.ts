@@ -281,10 +281,43 @@ function modelParam(enumInfo: { enum: string[]; description?: string } | undefin
 	return Type.String({ description: "Image model id, as offered by LunaRoute." });
 }
 
-async function fetchImageBytes(url: string, fetchImpl: FetchLike, signal?: AbortSignal): Promise<Uint8Array | undefined> {
+/** Cap for the signed-URL image download: generous headroom over the
+ * server's image ceilings (IMAGE_MAX_BYTES default 8 MiB, deployment-
+ * configurable) while still bounding what a malformed or hostile storage
+ * response can put in memory (roborev job 1672). */
+export const DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024;
+
+export async function fetchImageBytes(
+	url: string,
+	fetchImpl: FetchLike,
+	signal?: AbortSignal,
+	maxBytes: number = DOWNLOAD_MAX_BYTES,
+): Promise<Uint8Array | undefined> {
 	const res = await fetchImpl(url, { signal });
 	if (!res.ok) return undefined;
-	return Buffer.from(await res.arrayBuffer());
+	// Reject an honest oversized declaration up front…
+	const declared = Number(res.headers.get("content-length"));
+	if (Number.isFinite(declared) && declared > maxBytes) return undefined;
+	// …and bound the actual bytes too: a lying or absent Content-Length must
+	// not translate into an unbounded buffer.
+	const reader = res.body?.getReader();
+	if (!reader) {
+		const buffered = Buffer.from(await res.arrayBuffer());
+		return buffered.byteLength > maxBytes ? undefined : buffered;
+	}
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (total > maxBytes) {
+			await reader.cancel().catch(() => {});
+			return undefined;
+		}
+		chunks.push(value);
+	}
+	return Buffer.concat(chunks);
 }
 
 /** LunaRoute image ids are `img_` + ULID (upload design §2). Anything else —

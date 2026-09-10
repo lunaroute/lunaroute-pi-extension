@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	_resetImageToolsState,
+	fetchImageBytes,
 	parseImageResultText,
 	readUntilLimit,
 	parseUploadResultText,
@@ -913,5 +914,32 @@ describe("post-rename cancellation (roborev job 1667)", () => {
 		const result = await tool.execute("t1", { prompt: "p", model: "m" } as never, controller.signal, undefined, {} as never);
 		expect(io.files.size).toBe(0); // neither the final image nor the temp remains
 		expect((result.content[0] as { text?: string }).text).toContain("not saved locally");
+	});
+});
+
+describe("bounded signed-url download (roborev job 1672)", () => {
+	test("a declared Content-Length over the cap is rejected without downloading", async () => {
+		const fetchImpl = vi.fn(async () => new Response("x", { status: 200, headers: { "content-length": String(1024 * 1024) } }));
+		const bytes = await fetchImageBytes("https://u", fetchImpl as never, undefined, 1024);
+		expect(bytes).toBeUndefined();
+	});
+
+	test("a stream that exceeds the cap mid-download is cut off", async () => {
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new Uint8Array(600));
+				controller.enqueue(new Uint8Array(600)); // 1200 > 1024 cap
+				controller.close();
+			},
+		});
+		const fetchImpl = vi.fn(async () => new Response(body, { status: 200 }));
+		const bytes = await fetchImageBytes("https://u", fetchImpl as never, undefined, 1024);
+		expect(bytes).toBeUndefined();
+	});
+
+	test("a small body within the cap downloads fine", async () => {
+		const fetchImpl = vi.fn(async () => new Response("abc", { status: 200 }));
+		const bytes = await fetchImageBytes("https://u", fetchImpl as never, undefined, 1024);
+		expect(Buffer.from(bytes!).toString()).toBe("abc");
 	});
 });
