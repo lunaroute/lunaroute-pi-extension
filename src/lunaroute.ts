@@ -121,6 +121,7 @@ export type GatewayModelObject = {
 export type CatalogMappingResult =
   | { ok: true; model: ProviderModelConfig }
   | { ok: false; reason: "reasoning_missing_pi_block"; id: string }
+  | { ok: false; reason: "missing_window_metadata"; id: string }
   | { ok: false; reason: "non_chat_capability"; id: string; capability: string };
 
 /** Gateway capability tags that mark a catalog entry as unusable for chat
@@ -157,6 +158,13 @@ export function mapCatalogEntry(entry: GatewayModelObject): CatalogMappingResult
   const input: ("text" | "image")[] = entry.capabilities?.vision === true ? ["text", "image"] : ["text"];
   const gatewayPi = entry.client_compat?.pi ?? entry.pi;
 
+  // Pi validates contextWindow <= 0 only for models.json definitions, not for
+  // extension-registered models, so a zero would reach /model silently and
+  // disable auto-compaction for that model. Reject instead.
+  if (!entry.context_window || !entry.max_output_tokens) {
+    return { ok: false, reason: "missing_window_metadata", id: entry.id };
+  }
+
   if (reasoning && !gatewayPi) {
     return { ok: false, reason: "reasoning_missing_pi_block", id: entry.id };
   }
@@ -167,8 +175,8 @@ export function mapCatalogEntry(entry: GatewayModelObject): CatalogMappingResult
     reasoning,
     input,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: entry.context_window ?? 0,
-    maxTokens: entry.max_output_tokens ?? 0,
+    contextWindow: entry.context_window,
+    maxTokens: entry.max_output_tokens,
   };
   if (reasoning && gatewayPi) {
     const { thinkingLevelMap, compat } = normalizeGatewayPiBlock(gatewayPi);

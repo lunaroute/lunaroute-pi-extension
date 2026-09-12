@@ -221,7 +221,10 @@ for dev/staging via environment variables before starting Pi:
 ## Troubleshooting
 
 - **No models appear after login**: the gateway may be unreachable, or the key
-  may be stale. Re-run `/login lunaroute`.
+  may be stale. Re-run `/login lunaroute`. A model the gateway lists without a
+  context window is skipped rather than shown with a zero window.
+- **Requests fail with 401**: the stored key was rotated or revoked. Pi warns
+  once per session; run `/login lunaroute` to store a new one.
 - **First-run hint**: if you have not logged in, `session_start` shows
   `Run /login lunaroute to start using LunaRoute.`
 

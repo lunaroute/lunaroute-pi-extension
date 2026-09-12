@@ -137,7 +137,7 @@ describe("lunaroute v2 helpers", () => {
   });
 
   test("mapCatalogEntry maps vision capability to text+image input", () => {
-    const result = mapCatalogEntry({ id: "v", capabilities: { vision: true } });
+    const result = mapCatalogEntry({ id: "v", capabilities: { vision: true }, context_window: 8192, max_output_tokens: 1024 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.model.input).toEqual(["text", "image"]);
@@ -162,7 +162,7 @@ describe("lunaroute v2 helpers", () => {
       { tools: true },
     ];
     for (const capabilities of capabilitySets) {
-      const result = mapCatalogEntry({ id: "chat-1", capabilities });
+      const result = mapCatalogEntry({ id: "chat-1", capabilities, context_window: 8192, max_output_tokens: 1024 });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.model.id).toBe("chat-1");
@@ -205,7 +205,7 @@ describe("lunaroute v2 helpers", () => {
       { embeddings: false, rerank: false },
     ];
     for (const capabilities of capabilitySets) {
-      const result = mapCatalogEntry({ id: "chat-1", capabilities });
+      const result = mapCatalogEntry({ id: "chat-1", capabilities, context_window: 8192, max_output_tokens: 1024 });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.model.id).toBe("chat-1");
@@ -291,7 +291,7 @@ describe("lunaroute v2 helpers", () => {
   });
 
   test("mapCatalogEntry skips a reasoning model that is missing the pi block", () => {
-    const result = mapCatalogEntry({ id: "broken-reasoner", capabilities: { reasoning: true } });
+    const result = mapCatalogEntry({ id: "broken-reasoner", capabilities: { reasoning: true }, context_window: 8192, max_output_tokens: 1024 });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("reasoning_missing_pi_block");
@@ -303,6 +303,8 @@ describe("lunaroute v2 helpers", () => {
       id: "glm-5.2-vision-flex",
       capabilities: { reasoning: true, vision: true, tools: true },
       client_compat: null,
+      context_window: 8192,
+      max_output_tokens: 1024,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -310,19 +312,30 @@ describe("lunaroute v2 helpers", () => {
     expect(result.id).toBe("glm-5.2-vision-flex");
   });
 
-  test("mapCatalogEntry falls back to id for name when display_name is absent and defaults window/maxTokens to 0", () => {
-    const result = mapCatalogEntry({ id: "bare" });
+  test("mapCatalogEntry falls back to id for name when display_name is absent", () => {
+    const result = mapCatalogEntry({ id: "bare", context_window: 8192, max_output_tokens: 1024 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.model.name).toBe("bare");
-    expect(result.model.contextWindow).toBe(0);
-    expect(result.model.maxTokens).toBe(0);
+  });
+
+  test("mapCatalogEntry rejects a chat model the gateway lists without window metadata", () => {
+    // Pi validates contextWindow <= 0 only for models.json definitions, so a
+    // zero would reach /model silently and disable auto-compaction.
+    expect(mapCatalogEntry({ id: "no-window" })).toEqual({
+      ok: false,
+      reason: "missing_window_metadata",
+      id: "no-window",
+    });
+    expect(mapCatalogEntry({ id: "zero-window", context_window: 0, max_output_tokens: 0 }).ok).toBe(false);
   });
 
   test("mapCatalogEntry does not attach pi block fields to a non-reasoning model", () => {
     const result = mapCatalogEntry({
       id: "chat-with-stray-pi",
       capabilities: { reasoning: false },
+      context_window: 8192,
+      max_output_tokens: 1024,
       pi: {
         thinkingLevelMap: { off: null, high: "high" },
         compat: { thinkingFormat: "zai", maxTokensField: "max_tokens", supportsReasoningEffort: false },
