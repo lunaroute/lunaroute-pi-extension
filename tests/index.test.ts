@@ -455,7 +455,7 @@ describe("model persistence and auto-select", () => {
   test("auto-selects the first lunaroute model after a network refresh when no model is selected", async () => {
     const { pi, registerProvider, setModel } = fakePi();
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
-    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM" }])));
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM", context_window: 8192, max_output_tokens: 1024 }])));
     lunarouteExtension(pi);
     await refreshModelsOf(registerProvider)(fakeRefreshContext());
     expect(setModel).toHaveBeenCalledTimes(1);
@@ -470,7 +470,7 @@ describe("model persistence and auto-select", () => {
   test("does not auto-select when the user already has a non-unknown model", async () => {
     const { pi, registerProvider, setModel, handlers } = fakePi();
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
-    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2" }])));
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", context_window: 8192, max_output_tokens: 1024 }])));
     lunarouteExtension(pi);
     fireModelSelect(handlers, { id: "other", name: "other", api: "anthropic-messages", provider: "anthropic", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 0, maxTokens: 0 });
     await refreshModelsOf(registerProvider)(fakeRefreshContext());
@@ -480,7 +480,7 @@ describe("model persistence and auto-select", () => {
   test("auto-selects when the current model is the 'unknown' sentinel (first login)", async () => {
     const { pi, registerProvider, setModel, handlers } = fakePi();
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
-    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2" }])));
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", context_window: 8192, max_output_tokens: 1024 }])));
     lunarouteExtension(pi);
     fireModelSelect(handlers, { id: "unknown", name: "unknown", api: "unknown", provider: "unknown", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 0, maxTokens: 0 });
     await refreshModelsOf(registerProvider)(fakeRefreshContext());
@@ -490,7 +490,7 @@ describe("model persistence and auto-select", () => {
   test("session_start tracks the current model from ctx.model (no auto-select afterwards)", async () => {
     const { pi, registerProvider, setModel, handlers } = fakePi();
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
-    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2" }])));
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", context_window: 8192, max_output_tokens: 1024 }])));
     lunarouteExtension(pi);
     const ctx = fakeContext({
       model: { id: "existing", name: "existing", api: "anthropic-messages", provider: "anthropic", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 0, maxTokens: 0 } as unknown as Model<Api>,
@@ -541,7 +541,7 @@ describe("model persistence and auto-select", () => {
   test("notifies the user after auto-picking the default model", async () => {
     const { pi, registerProvider, setModel, handlers } = fakePi();
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
-    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM" }])));
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM", context_window: 8192, max_output_tokens: 1024 }])));
     lunarouteExtension(pi);
     const ctx = fakeContext({ modelRegistry: { getApiKeyForProvider: () => Promise.resolve(undefined) } });
     await handlers.get("session_start")?.({}, ctx);
@@ -556,7 +556,7 @@ describe("model persistence and auto-select", () => {
   test("does not notify when setModel reports the provider is not authenticated", async () => {
     const { pi, registerProvider, setModel, handlers } = fakePi();
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
-    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM" }])));
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM", context_window: 8192, max_output_tokens: 1024 }])));
     setModel.mockResolvedValue(false);
     lunarouteExtension(pi);
     const ctx = fakeContext({ modelRegistry: { getApiKeyForProvider: () => Promise.resolve(undefined) } });
@@ -572,7 +572,7 @@ describe("model persistence and auto-select", () => {
   test("surfaces a warning when setModel rejects", async () => {
     const { pi, registerProvider, setModel, handlers } = fakePi();
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
-    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM" }])));
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM", context_window: 8192, max_output_tokens: 1024 }])));
     setModel.mockRejectedValue(new Error("no API key for lunaroute/glm-5.2"));
     lunarouteExtension(pi);
     const ctx = fakeContext({ modelRegistry: { getApiKeyForProvider: () => Promise.resolve(undefined) } });
@@ -591,7 +591,7 @@ describe("model persistence and auto-select", () => {
   test("falls back to console.warn when no ui is captured and setModel rejects", async () => {
     const { pi, registerProvider, setModel } = fakePi();
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
-    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM" }])));
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2", display_name: "GLM", context_window: 8192, max_output_tokens: 1024 }])));
     setModel.mockRejectedValue(new Error("no API key for lunaroute/glm-5.2"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -697,3 +697,90 @@ describe("model persistence and auto-select", () => {
     await handlers.get("session_start")?.({}, ctx);
     expect(registeredTools.map((t) => t.name)).toContain("convert_document");
   });
+
+describe("rotated-key reprompt (kata azhv)", () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    // Keep registration and any incidental call off the network.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [] } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })),
+    );
+  });
+
+  function fireAgentEnd(
+    handlers: Map<string, SessionHandler>,
+    ctx: FakeContext,
+    message: Record<string, unknown> = {},
+  ) {
+    const assistant = {
+      role: "assistant",
+      provider: LUNAROUTE_PROVIDER,
+      stopReason: "error",
+      errorMessage: '401: {"code":"INVALID_API_KEY","message":"Invalid or revoked API key"}',
+      ...message,
+    };
+    handlers.get("agent_end")?.({ type: "agent_end", messages: [assistant] }, ctx);
+  }
+
+  function setup() {
+    const { pi, handlers } = fakePi();
+    lunarouteExtension(pi);
+    return handlers;
+  }
+
+  test("a 401 on a lunaroute response warns once and names /login lunaroute", () => {
+    const handlers = setup();
+    const ctx = fakeContext();
+    fireAgentEnd(handlers, ctx);
+    fireAgentEnd(handlers, ctx); // a retry storm must not spam
+    expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+    const [message, type] = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(message).toContain("/login lunaroute");
+    expect(message).toContain("401");
+    expect(type).toBe("warning");
+  });
+
+  test("a 401 from another provider stays silent", () => {
+    const handlers = setup();
+    const ctx = fakeContext();
+    fireAgentEnd(handlers, ctx, { provider: "anthropic" });
+    expect(ctx.ui.notify).not.toHaveBeenCalled();
+  });
+
+  test("successes and non-401 failures stay silent", () => {
+    const handlers = setup();
+    const ctx = fakeContext();
+    fireAgentEnd(handlers, ctx, { stopReason: "stop", errorMessage: undefined });
+    fireAgentEnd(handlers, ctx, { errorMessage: "503: upstream unavailable" });
+    fireAgentEnd(handlers, ctx, { errorMessage: "request failed" });
+    expect(ctx.ui.notify).not.toHaveBeenCalled();
+  });
+
+  test("a new session re-arms the warning", async () => {
+    const handlers = setup();
+    const first = fakeContext();
+    fireAgentEnd(handlers, first);
+    expect(first.ui.notify).toHaveBeenCalledTimes(1);
+    await handlers.get("session_start")?.({}, fakeContext({
+      model: { provider: LUNAROUTE_PROVIDER, id: "glm-5.3" } as unknown as Model<Api>,
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
+    }));
+    const second = fakeContext();
+    fireAgentEnd(handlers, second);
+    expect(second.ui.notify).toHaveBeenCalledTimes(1);
+  });
+
+  test("without a UI it falls back to console.warn", () => {
+    const handlers = setup();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    fireAgentEnd(handlers, fakeContext({ hasUI: false }));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("/login lunaroute"));
+    warn.mockRestore();
+  });
+});

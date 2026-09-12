@@ -71,6 +71,8 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
   // Tracks the session's current model so the post-login refresh can tell
   // whether the user already has a model (don't override) or has none yet.
   let currentModel: Model<Api> | undefined;
+  // One warning per session for a rejected key; a retry storm must not spam.
+  let keyRejectedNotified = false;
   // Latest session UI (kata 9v71): lets the auto-pick report what it selected
   // or why it failed. Headless hosts never set it — notifications just skip.
   let latestUi: { notify(message: string, type?: "info" | "warning" | "error"): void } | undefined;
@@ -158,6 +160,7 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     currentModel = ctx.model;
+    keyRejectedNotified = false;
     if (ctx.hasUI) latestUi = ctx.ui;
     const settings = readSettings(process.env);
     const key = await ctx.modelRegistry.getApiKeyForProvider(LUNAROUTE_PROVIDER);
@@ -183,5 +186,26 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
 
   pi.on("model_select", (event) => {
     currentModel = event.model;
+  });
+
+  // Pi never emits after_provider_response for error statuses (verified against
+  // 0.85.1), so a rejected key is detected on the settled assistant message:
+  // it carries its own provider, stopReason "error", and the gateway's message.
+  pi.on("agent_end", (event, ctx) => {
+    const messages = event.messages ?? [];
+    const last = messages[messages.length - 1] as
+      | { role?: string; provider?: string; stopReason?: string; errorMessage?: string }
+      | undefined;
+    if (!last || last.role !== "assistant" || last.provider !== LUNAROUTE_PROVIDER) return;
+    const detail = last.errorMessage ?? "";
+    if (last.stopReason !== "error" || !(detail.startsWith("401") || detail.includes("HTTP 401"))) return;
+    if (keyRejectedNotified) return;
+    keyRejectedNotified = true;
+    const message =
+      "LunaRoute rejected the stored key (HTTP 401) — it was rotated or revoked. Run /login lunaroute to sign in again.";
+    // Direct ctx, not notifyUser: that helper is scoped to the refresh callback
+    // and depends on latestUi having been captured at session_start.
+    if (ctx.hasUI) ctx.ui.notify(message, "warning");
+    else console.warn(message);
   });
 }

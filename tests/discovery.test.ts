@@ -103,12 +103,13 @@ describe("lunaroute refreshModels", () => {
   test("skips reasoning models with missing or null Pi compatibility metadata", async () => {
     vi.stubGlobal("fetch", vi.fn(async () =>
       modelsResponse([
-        { id: "ok-chat", capabilities: { tools: true } },
-        { id: "broken-reasoner", capabilities: { reasoning: true } },
+        { id: "ok-chat", capabilities: { tools: true }, context_window: 8192, max_output_tokens: 1024 },
+        { id: "broken-reasoner", capabilities: { reasoning: true }, context_window: 8192, max_output_tokens: 1024 },
         {
           id: "glm-5.2-vision-flex",
           capabilities: { reasoning: true, vision: true, tools: true },
           client_compat: null,
+          context_window: 8192, max_output_tokens: 1024,
         },
       ]),
     ));
@@ -182,7 +183,7 @@ describe("lunaroute refreshModels", () => {
   });
 
   test("uses an injected fetch when provided (no global fetch needed)", async () => {
-    const injected = vi.fn(async () => modelsResponse([{ id: "x" }]));
+    const injected = vi.fn(async () => modelsResponse([{ id: "x", context_window: 8192, max_output_tokens: 1024 }]));
     const models = await createRefreshModels({}, { fetch: injected })(fakeContext());
     expect(models.map((m) => m.id)).toEqual(["x"]);
     expect(injected).toHaveBeenCalled();
@@ -267,7 +268,7 @@ describe("lunaroute refreshModels persist + restore", () => {
 
   test("invokes onCatalogRefreshed once with the fresh catalog after a successful fetch", async () => {
     const onCatalogRefreshed = vi.fn();
-    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "x" }])));
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "x", context_window: 8192, max_output_tokens: 1024 }])));
     await createRefreshModels({}, { onCatalogRefreshed })(fakeContext());
     expect(onCatalogRefreshed).toHaveBeenCalledTimes(1);
     expect((onCatalogRefreshed.mock.calls[0][0] as { id: string }[]).map((m) => m.id)).toEqual(["x"]);
@@ -309,7 +310,7 @@ describe("lunaroute refreshModels persist + restore", () => {
 
   test("invokes onCatalogRefreshed exactly once even when the callback throws", async () => {
     const onCatalogRefreshed = vi.fn(() => { throw new Error("callback boom"); });
-    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "fresh-1" }] as { id: string }[])));
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "fresh-1", context_window: 8192, max_output_tokens: 1024 }])));
     const models = await createRefreshModels({}, { onCatalogRefreshed })(fakeContext());
     expect(models.map((m) => m.id)).toEqual(["fresh-1"]);
     expect(onCatalogRefreshed).toHaveBeenCalledTimes(1);
