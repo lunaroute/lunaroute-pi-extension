@@ -61,35 +61,28 @@ different one.
 
 ## LunaRoute MCP tools
 
-When you are logged in, the extension auto-registers the hosted LunaRoute MCP
-server (`https://mcp.lunaroute.com/mcp`) with
-[pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter), so LunaRoute
-tools (in v1: `generate_image`) become callable from Pi. The registration is
-in-memory only and never written to any `mcp.json` — it lives for the Pi
-process and is disposed when the session ends. Your `lr_` key is never
-persisted to any MCP config.
+When you are logged in, the extension registers first-class Pi tools backed by
+the hosted LunaRoute MCP server (`https://mcp.lunaroute.com/mcp`) over a
+direct Streamable HTTP connection — no MCP adapter extension involved:
 
-- **Requires pi-mcp-adapter.** Tools surface through the adapter's `mcp()`
-  proxy tool, not as first-class Pi tools. Install it with
-  `pi install npm:pi-mcp-adapter`. It is declared as an *optional* peer
-  dependency (`>=2.28.0`) — metadata only: installing the extension never
-  pulls the adapter in, and everything degrades gracefully without it.
+- `web_search` / `web_fetch` (when no other extension already provides them)
+- `generate_image` / `edit_image` / `upload_image`
+- `convert_document`
+
+Your `lr_` key is sent per request and never persisted to any MCP config.
+
 - **Logged out**: no registration occurs (silent). Log in with
   `/login lunaroute`.
-- **Logged in but adapter not installed**: you get a one-time install hint
-  (`pi install npm:pi-mcp-adapter`) when you log in and again at the next
-  session start — once per Pi process, never nagging.
-- **After `/login lunaroute`** with a rotated key: the prior registration is
-  disposed and re-registered with the new key, so rotation takes effect
-  without restarting Pi.
+- **After `/login lunaroute`** with a rotated key: the tools' shared client is
+  swapped to the fresh key, so rotation takes effect without restarting Pi.
 - Org/user/tool policy is enforced server-side and shapes `tools/list` — an
   empty tool list is a valid outcome, not an error.
-- **Already configured LunaRoute MCP yourself?** Your config wins. The
-  extension detects a `lunaroute` server (or any server pointing at the
-  hosted LunaRoute MCP URL) in your MCP config and skips its own
-  registration — no duplicate tools, no warnings, just a one-time notice.
-  Note your config's key is static: `/login lunaroute` rotation won't update
-  it, so edit the config yourself when you rotate.
+- The **MCP tools** toggle in `/lunaroute` is the master switch for every
+  MCP-backed tool family; each family below has its own toggle too.
+- **Coming from an older release?** The extension no longer uses
+  [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter). Remove it
+  with `pi remove npm:pi-mcp-adapter` unless you use it for other MCP
+  servers. (One-time session notice when it is still installed.)
 - Overriding `LUNAROUTE_MCP_URL` sends your `lr_` key to that endpoint; prefer
   HTTPS in production (HTTP is intended only for local development).
 
@@ -219,7 +212,7 @@ for dev/staging via environment variables before starting Pi:
 | `LUNAROUTE_ROUTING_URL` | `https://gw.lunaroute.com/v1` | Gateway base URL (provider `baseUrl` + `/models`) |
 | `LUNAROUTE_API_URL` | `https://api.lunaroute.com` | API host for `/v1/auth/exchange` |
 | `LUNAROUTE_FRONT_URL` | `https://app.lunaroute.com` | Web app host for `/device-auth/pi` browser login |
-| `LUNAROUTE_MCP_URL` | `https://mcp.lunaroute.com/mcp` | Hosted MCP server URL registered with pi-mcp-adapter |
+| `LUNAROUTE_MCP_URL` | `https://mcp.lunaroute.com/mcp` | Hosted MCP server URL behind the first-class MCP-backed tools |
 | `LUNAROUTE_IMAGE_DIR` | `<agentDir>/lunaroute-images` | Where generated/edited images are saved (kata e30g) |
 | `LUNAROUTE_IMAGE_TOOLS` | *(unset)* | Set to `off`/`0`/`false` to disable the first-class image tools |
 | `LUNAROUTE_DOCS_DIR` | `<agentDir>/lunaroute-docs` | Where oversized converted documents are saved (kata zpzt) |
@@ -248,10 +241,10 @@ Manual smoke test:
 4. Repeat with the paste path.
 5. On a fresh profile with no key, confirm the first-run hint appears and no
    error is thrown.
-6. With pi-mcp-adapter installed, `/login lunaroute`, then `/mcp` should list
-   the `lunaroute` server; call `generate_image` end-to-end.
-7. Without pi-mcp-adapter, logged in, confirm the one-time
-   `pi install npm:pi-mcp-adapter` hint; logged out, confirm silence.
+6. Logged in, confirm the first-class LunaRoute tools appear (`/tools`) and
+   `generate_image` works end-to-end.
+7. With pi-mcp-adapter still installed, confirm the one-time migration notice
+   at session start; logged out, confirm silence.
 8. Web tools: logged in with no other web-search extension installed, ask
    the agent to search the web — the `web_search` tool should appear in the
    tool list, run, and render collapsed with expandable sources. With

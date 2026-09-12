@@ -1,12 +1,5 @@
 import { initTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import {
-	MCP_RUNTIME_REGISTER_EVENT,
-	_resetMcpState,
-	_setAdapterConfigLoader,
-	registerLunarouteMcp,
-	type McpRuntimeRegistrationRequest,
-} from "../src/mcp.js";
 import { DEFAULT_SETTINGS, type LunarouteSettings } from "../src/settings.js";
 import {
 	buildSettingsItems,
@@ -48,18 +41,6 @@ function fakeEventBus(): Bus {
 			return () => set!.delete(handler);
 		},
 	};
-}
-
-function installFakeAdapter(bus: Bus) {
-	const requests: McpRuntimeRegistrationRequest[] = [];
-	const dispose = vi.fn().mockResolvedValue(undefined);
-	bus.on(MCP_RUNTIME_REGISTER_EVENT, (raw) => {
-		const req = raw as McpRuntimeRegistrationRequest;
-		if (req.result !== undefined) return;
-		requests.push(req);
-		req.result = { ok: true, registration: { dispose } };
-	});
-	return { requests, dispose };
 }
 
 function fakePi(options: { toolNames?: string[]; activeTools?: string[] } = {}) {
@@ -111,8 +92,6 @@ beforeEach(() => {
 	_resetImageToolsState();
 	_resetConvertToolsState();
 	_resetWebToolsState();
-	_resetMcpState();
-	_setAdapterConfigLoader(async () => ({ mcpServers: {} }));
 });
 
 // ============================================================================
@@ -143,20 +122,20 @@ describe("buildSettingsItems", () => {
 
 describe("createSettingChangeApplier", () => {
 	test("writes the file before applying (source of truth first)", async () => {
-		const { pi, bus } = fakePi();
-		const { dispose } = installFakeAdapter(bus);
-		const order: string[] = [];
-		const write = vi.fn(() => order.push("write"));
+		const { pi, getActive } = fakePi();
+		// Register ours first (as session_start would) so the off-apply has
+		// something to deactivate.
+		await registerWebTools(pi, { key: "lr_key", env: ENV, version: "0.6.0-test", sessionId: "session-1", fetchImpl: WEB_TOOLS_FETCH });
+		expect(getActive()).toContain("web_search");
+		const write = vi.fn();
 		const ui = { notify: vi.fn() };
-		const deps = apierDeps({ write: write as never });
-		const applier = createSettingChangeApplier(pi, deps, ui, async () => "lr_key", DEFAULT_SETTINGS);
-		dispose.mockImplementation(async () => order.push("dispose"));
-		// Register MCP first (as session_start would) so mcp-off has something to dispose.
-		registerLunarouteMcp(pi, "lr_key", { env: ENV, version: "0.6.0-test", sessionId: "session-1" });
-		expect(order).toEqual([]);
-		await applier("mcp", "off");
-		expect(write).toHaveBeenCalledWith(ENV, { ...DEFAULT_SETTINGS, mcp: "off" });
-		expect(order).toEqual(["write", "dispose"]);
+		const applier = createSettingChangeApplier(pi, apierDeps({ write: write as never }), ui, async () => "lr_key", DEFAULT_SETTINGS);
+		await applier("webTools", "off");
+		expect(write).toHaveBeenCalledWith(ENV, { ...DEFAULT_SETTINGS, webTools: "off" });
+		expect(getActive()).not.toContain("web_search");
+		const writeOrder = (write as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+		const applyOrder = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.invocationCallOrder.at(-1)!;
+		expect(writeOrder).toBeLessThan(applyOrder);
 	});
 
 	test("searchProvider: writes but applies nothing", async () => {
@@ -171,8 +150,7 @@ describe("createSettingChangeApplier", () => {
 	});
 
 	test("write failure: error notify, nothing applied", async () => {
-		const { pi, bus } = fakePi();
-		installFakeAdapter(bus);
+		const { pi } = fakePi();
 		const write = vi.fn(() => {
 			throw new Error("disk full");
 		});
@@ -326,52 +304,94 @@ describe("createSettingChangeApplier", () => {
 		});
 	});
 
-	describe("mcp", () => {
-		test("off disposes the current registration", async () => {
-			const { pi, bus } = fakePi();
-			const { dispose, requests } = installFakeAdapter(bus);
-			// Register first, like session_start would.
-			const ui = { notify: vi.fn() };
-			const applierOn = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", DEFAULT_SETTINGS);
-			await applierOn("mcp", "on");
-			expect(requests).toHaveLength(1);
-			expect(dispose).not.toHaveBeenCalled();
-			await applierOn("mcp", "off");
-			expect(dispose).toHaveBeenCalled();
-			expect(ui.notify).toHaveBeenCalledWith("LunaRoute MCP disabled", "info");
+	describe("mcp (master switch, kata 4ws9)", () => {
+		// One stub serves every family's discovery: tools/list returns the
+		// full hosted-server catalog.
+		const ALL_FAMILIES_FETCH = mcpFetch({
+			initialize: () => ({}),
+			"notifications/initialized": () => undefined,
+			"tools/list": () => ({
+				tools: [{ name: "web_search" }, { name: "generate_image" }, { name: "convert_document" }],
+			}),
 		});
 
-		test("on defers to a user-configured LunaRoute MCP (notice, no registration)", async () => {
-			_setAdapterConfigLoader(async () => ({
-				mcpServers: { lunaroute: { url: "https://mcp.lunaroute.com/mcp" } },
-			}));
-			const { pi, bus } = fakePi();
-			const { requests } = installFakeAdapter(bus);
+		test("off deactivates every family whose toggle is on", async () => {
+			const { pi, getActive } = fakePi();
+			await registerWebTools(pi, { key: "lr_key", env: ENV, version: "0.6.0-test", sessionId: "s", fetchImpl: ALL_FAMILIES_FETCH });
+			await registerImageTools(pi, { key: "lr_key", env: ENV, version: "0.6.0-test", sessionId: "s", fetchImpl: ALL_FAMILIES_FETCH });
+			expect(getActive()).toContain("web_search");
+			expect(getActive()).toContain("generate_image");
 			const ui = { notify: vi.fn() };
 			const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", DEFAULT_SETTINGS);
-			await applier("mcp", "on");
-			expect(requests).toHaveLength(0);
-			expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("already configured"), "info");
+			await applier("mcp", "off");
+			expect(getActive()).not.toContain("web_search");
+			expect(getActive()).not.toContain("generate_image");
+			// All three families have their toggle on, so all three are driven
+			// off — convert had nothing registered but still reports the off.
+			expect(ui.notify).toHaveBeenCalledWith("LunaRoute web tools disabled", "info");
+			expect(ui.notify).toHaveBeenCalledWith("LunaRoute image tools disabled", "info");
+			expect(ui.notify).toHaveBeenCalledWith("LunaRoute convert tools disabled", "info");
 		});
 
-		test("on with key and adapter → registers", async () => {
-			const { pi, bus } = fakePi();
-			const { requests } = installFakeAdapter(bus);
+		test("on registers every family whose own toggle is on", async () => {
+			const { pi, registered } = fakePi();
 			const ui = { notify: vi.fn() };
-			const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", DEFAULT_SETTINGS);
-			await applier("mcp", "on");
-			expect(requests).toHaveLength(1);
-			expect(ui.notify).toHaveBeenCalledWith("LunaRoute MCP enabled", "info");
+			vi.stubGlobal("fetch", ALL_FAMILIES_FETCH);
+			try {
+				const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", DEFAULT_SETTINGS);
+				await applier("mcp", "on");
+				const names = registered.map((t) => t.name);
+				expect(names).toContain("web_search");
+				expect(names).toContain("generate_image");
+				expect(names).toContain("convert_document");
+			} finally {
+				vi.unstubAllGlobals();
+			}
 		});
 
-		test("on without a key → login hint", async () => {
-			const { pi, bus } = fakePi();
-			const { requests } = installFakeAdapter(bus);
+		test("on leaves families whose own toggle is off alone", async () => {
+			const settings: LunarouteSettings = { ...DEFAULT_SETTINGS, webTools: "off" };
+			const { pi, registered } = fakePi();
 			const ui = { notify: vi.fn() };
-			const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => undefined, DEFAULT_SETTINGS);
-			await applier("mcp", "on");
-			expect(requests).toHaveLength(0);
-			expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("/login lunaroute"), "info");
+			vi.stubGlobal("fetch", ALL_FAMILIES_FETCH);
+			try {
+				const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", settings);
+				await applier("mcp", "on");
+				const names = registered.map((t) => t.name);
+				expect(names).not.toContain("web_search");
+				expect(names).toContain("generate_image");
+				expect(names).toContain("convert_document");
+				// The web family was skipped wholesale — no web notify at all.
+				const webNotifies = (ui.notify.mock.calls as string[][]).filter((c) => c[0].includes("web tools"));
+				expect(webNotifies).toHaveLength(0);
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		});
+
+		test("off with a family already off stays silent for that family", async () => {
+			const settings: LunarouteSettings = { ...DEFAULT_SETTINGS, webTools: "off" };
+			const { pi } = fakePi();
+			const ui = { notify: vi.fn() };
+			const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => "lr_key", settings);
+			await applier("mcp", "off");
+			const webNotifies = (ui.notify.mock.calls as string[][]).filter((c) => c[0].includes("web tools"));
+			expect(webNotifies).toHaveLength(0);
+		});
+
+		test("on without a key → login hints from the families that apply", async () => {
+			const { pi, registered } = fakePi();
+			const ui = { notify: vi.fn() };
+			vi.stubGlobal("fetch", ALL_FAMILIES_FETCH);
+			try {
+				const applier = createSettingChangeApplier(pi, apierDeps(), ui, async () => undefined, DEFAULT_SETTINGS);
+				await applier("mcp", "on");
+				expect(registered).toHaveLength(0);
+				const loginHints = (ui.notify.mock.calls as string[][]).filter((c) => c[0].includes("/login lunaroute"));
+				expect(loginHints.length).toBeGreaterThan(0);
+			} finally {
+				vi.unstubAllGlobals();
+			}
 		});
 	});
 });

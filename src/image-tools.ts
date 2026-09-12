@@ -5,7 +5,7 @@ import type { ExtensionAPI, ThemeColor, ToolDefinition } from "@earendil-works/p
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type TSchema } from "typebox";
 import { agentDirFromEnv, buildAttributionHeaders, resolveMcpUrl } from "./lunaroute.js";
-import { createLunarouteMcpClient, type FetchLike, type LunarouteMcpClient } from "./web-tools.js";
+import { createLunarouteMcpClient, delegatingClient, type FetchLike, type LunarouteMcpClient } from "./web-tools.js";
 import { DEFAULT_SETTINGS, imageToolsEnabled, type LunarouteSettings } from "./settings.js";
 
 // First-class image tools (kata e30g): generate_image / edit_image /
@@ -714,17 +714,6 @@ export function _resetImageToolsState(): void {
 	registeredModelEnums.clear();
 	currentClient.client = undefined;
 	registrationGeneration = 0;
-}
-
-/** A stable facade delegating to the current client — captured by tool
- * closures at registration time, while the credentials behind it rotate. */
-export function delegatingClient(ref: { client?: LunarouteMcpClient }): LunarouteMcpClient {
-	const notConnected = () => Promise.reject(new Error("LunaRoute image tools: not connected"));
-	return {
-		callTool: (name, args, signal) => ref.client?.callTool(name, args, signal) ?? notConnected(),
-		listTools: (signal) => ref.client?.listTools(signal) ?? notConnected(),
-		listToolDescriptors: (signal) => ref.client?.listToolDescriptors?.(signal) ?? notConnected(),
-	};
 }
 
 function modelEnumEquals(

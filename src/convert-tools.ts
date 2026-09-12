@@ -429,7 +429,7 @@ async function convertFallback(
 // Registration orchestrator (every e30g review-loop lesson, day one)
 // ============================================================================
 
-import { delegatingClient } from "./image-tools.js";
+import { delegatingClient } from "./web-tools.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const registeredConvertToolNames = new Set<string>();

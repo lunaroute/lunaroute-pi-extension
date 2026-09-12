@@ -139,8 +139,8 @@ export function convertToolsEnabled(env: NodeJS.ProcessEnv, settings: LunarouteS
   return settings.convertTools === "on";
 }
 
-/** MCP registration enabled? (The user-config defer rule is orthogonal and
- * stays in the registration orchestration — see mcp.ts.) */
+/** Master switch for every MCP-backed tool family (kata 4ws9): off means no
+ * LunaRoute MCP tools at all; on lets each family's own toggle decide. */
 export function mcpEnabled(settings: LunarouteSettings): boolean {
   return settings.mcp === "on";
 }

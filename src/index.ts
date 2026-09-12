@@ -12,12 +12,58 @@ import {
 } from "./lunaroute.js";
 import { lunarouteOAuth } from "./login.js";
 import { createRefreshModels } from "./discovery.js";
-import { disposeLunarouteMcp, isAlreadyRegisteredError, isLunarouteMcpConfigured, maybeShowAdapterHint, maybeShowConfiguredNotice, registerLunarouteMcp } from "./mcp.js";
 import { registerWebTools } from "./web-tools.js";
 import { registerImageTools } from "./image-tools.js";
 import { registerConvertTools } from "./convert-tools.js";
 import { mcpEnabled, readSettings } from "./settings.js";
 import { registerLunarouteSettingsCommand } from "./settings-ui.js";
+import { createRequire } from "node:module";
+
+// One-time-per-process migration notice (kata 4ws9): the extension no longer
+// uses pi-mcp-adapter — first-class tools cover the hosted server directly.
+// Users who installed the adapter at our old hint can remove it; stay soft
+// because the adapter may still serve their OTHER MCP servers.
+export const ADAPTER_MIGRATION_NOTICE =
+  "LunaRoute no longer uses pi-mcp-adapter. Remove it with `pi remove npm:pi-mcp-adapter` unless other MCP servers need it.";
+
+let adapterNoticeShown = false;
+let adapterInstalledOverride: (() => boolean) | undefined;
+
+export function isPiMcpAdapterInstalled(): boolean {
+  if (adapterInstalledOverride) return adapterInstalledOverride();
+  let resolve: (spec: string) => string;
+  try {
+    resolve = createRequire(import.meta.url).resolve;
+  } catch {
+    return false;
+  }
+  try {
+    resolve("pi-mcp-adapter");
+    return true;
+  } catch (e) {
+    // ERR_PACKAGE_PATH_NOT_EXPORTED still means "package found".
+    return (e as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND";
+  }
+}
+
+function maybeShowAdapterMigrationNotice(ui: {
+  notify(message: string, type?: "info" | "warning" | "error"): void;
+}): void {
+  if (adapterNoticeShown) return;
+  if (!isPiMcpAdapterInstalled()) return;
+  adapterNoticeShown = true;
+  ui.notify(ADAPTER_MIGRATION_NOTICE, "info");
+}
+
+export function _resetAdapterNoticeState(): void {
+  adapterNoticeShown = false;
+  adapterInstalledOverride = undefined;
+}
+
+/** Test-only: force the adapter-presence answer. */
+export function _setAdapterInstalledOverride(fn: (() => boolean) | undefined): void {
+  adapterInstalledOverride = fn;
+}
 
 export default function lunarouteExtension(pi: ExtensionAPI): void {
   const sessionId = generateSessionId();
@@ -62,32 +108,19 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
       ...lunarouteOAuth,
       async login(callbacks) {
         const creds = await lunarouteOAuth.login(callbacks);
-        await disposeLunarouteMcp();
-        // User settings gate both surfaces (kata bjy9); read fresh — the
-        // file may have changed since the factory ran.
-        const settings = readSettings(process.env);
-        if (!mcpEnabled(settings)) {
-          // User turned MCP off (kata bjy9): skip re-registration but still
-          // set up web tools below.
-        } else if (await isLunarouteMcpConfigured(process.env)) {
-          // A user-configured LunaRoute MCP wins: skip registration (the
-          // adapter would reject ours by name anyway).
-          maybeShowConfiguredNotice({ notify: (m) => callbacks.onProgress?.(m) });
-        } else {
-          const { registered, error } = registerLunarouteMcp(pi, creds.access, mcpDeps);
-          if (error) console.warn(`LunaRoute MCP re-register failed: ${error.message}`);
-          else if (!registered) maybeShowAdapterHint({ notify: (m) => callbacks.onProgress?.(m) });
-        }
-        // First-class web tools too (kata akyg): a fresh login means the
+        // First-class tools on a fresh login (kata akyg/e30g/zpzt): the
         // session_start path may have skipped registration (no key then).
-        // Fire-and-forget — registerWebTools never throws.
-        void registerWebTools(pi, { key: creds.access, ...mcpDeps, settings }).catch(() => {});
-        // Same for the image tools (kata e30g) — settings re-read at the call
-        // site: several awaits separate this from the read at the top of the
-        // login flow, and a toggle in between must win (roborev job 1670).
-        void registerImageTools(pi, { key: creds.access, ...mcpDeps, settings: readSettings(process.env) }).catch(() => {});
-        // And the convert tools (kata zpzt) — same call-site settings read.
-        void registerConvertTools(pi, { key: creds.access, ...mcpDeps, settings: readSettings(process.env) }).catch(() => {});
+        // Master-gated by the mcp toggle (kata 4ws9); family toggles apply
+        // inside each register* call. Fire-and-forget — register* never throw.
+        const settings = readSettings(process.env);
+        if (mcpEnabled(settings)) {
+          void registerWebTools(pi, { key: creds.access, ...mcpDeps, settings }).catch(() => {});
+          // Settings re-read at each call site: several awaits separate these
+          // from the read above, and a /lunaroute toggle in between must win
+          // (roborev job 1670).
+          void registerImageTools(pi, { key: creds.access, ...mcpDeps, settings: readSettings(process.env) }).catch(() => {});
+          void registerConvertTools(pi, { key: creds.access, ...mcpDeps, settings: readSettings(process.env) }).catch(() => {});
+        }
         return creds;
       },
     },
@@ -134,44 +167,21 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
     if (ctx.hasUI && !key) {
       ctx.ui.notify(firstRunHint(), "info");
     }
-    if (!key) return; // not logged in — silent, no MCP registration
-    // User turned MCP off (kata bjy9): silent skip, defer notice included.
+    if (!key) return; // not logged in — silent, no tool registration
+    maybeShowAdapterMigrationNotice(ctx.ui);
     if (mcpEnabled(settings)) {
-      // A user-configured LunaRoute MCP server wins (the adapter keeps the
-      // configured server and rejects ours by name): defer to it.
-      if (await isLunarouteMcpConfigured(process.env)) {
-        if (ctx.hasUI) maybeShowConfiguredNotice(ctx.ui);
-      } else {
-        const { registered, error } = registerLunarouteMcp(pi, key, mcpDeps);
-        if (error && isAlreadyRegisteredError(error) && ctx.hasUI) {
-          // Raced: the config appeared (or a custom --mcp-config was used) after
-          // our check. Same defer outcome, same one-time notice.
-          maybeShowConfiguredNotice(ctx.ui);
-        } else if (error && ctx.hasUI) {
-          ctx.ui.notify(`LunaRoute MCP registration failed: ${error.message}`, "warning");
-        } else if (!registered && ctx.hasUI) {
-          maybeShowAdapterHint(ctx.ui);
-        }
-      }
+      // Master gate (kata 4ws9): the mcp toggle governs every MCP-backed
+      // family; each family's own toggle applies inside register*.
+      await registerWebTools(pi, { key, ...mcpDeps, settings });
+      // Settings are read AT each call site: the key lookup above awaited,
+      // and a /lunaroute toggle landing in that window must not be bypassed
+      // by a stale "on" snapshot (roborev job 1670).
+      await registerImageTools(pi, { key, ...mcpDeps, settings: readSettings(process.env) });
+      await registerConvertTools(pi, { key, ...mcpDeps, settings: readSettings(process.env) });
     }
-    // First-class web_search/web_fetch (kata akyg): register only what is
-    // missing locally and offered by the hosted MCP server. Never throws.
-    await registerWebTools(pi, { key, ...mcpDeps, settings });
-    // First-class image tools (kata e30g): no local detection — the server's
-    // tools/list gates entitlement/policy. Never throws. Settings are read
-    // AT the call site: the key lookup above awaited, and a /lunaroute
-    // toggle landing in that window must not be bypassed by a stale "on"
-    // snapshot (roborev job 1670).
-    await registerImageTools(pi, { key, ...mcpDeps, settings: readSettings(process.env) });
-    // First-class convert_document (kata zpzt): same call-site settings read.
-    await registerConvertTools(pi, { key, ...mcpDeps, settings: readSettings(process.env) });
   });
 
   pi.on("model_select", (event) => {
     currentModel = event.model;
-  });
-
-  pi.on("session_shutdown", async () => {
-    await disposeLunarouteMcp();
   });
 }
