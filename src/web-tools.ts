@@ -137,10 +137,13 @@ function decodeJsonRpcBody(body: string, expectedId: number): JsonRpcResponse {
 
 /** Minimal MCP Streamable HTTP client for the hosted LunaRoute server.
  * One POST per call; a lazy initialize handshake runs once and is optional
- * (the production server is stateless and accepts bare tools/call). */
+ * (the production server is stateless and accepts bare tools/call).
+ * Stateful gateways that issue Mcp-Session-Id are supported: the captured
+ * session header is echoed on every subsequent request (kata 4ws9). */
 export function createLunarouteMcpClient(opts: McpClientOptions): LunarouteMcpClient {
 	let nextId = 1;
 	let initialized = false;
+	let mcpSessionId: string | undefined;
 
 	async function rpc(method: string, params?: unknown, signal?: AbortSignal): Promise<unknown> {
 		const id = nextId++;
@@ -149,11 +152,13 @@ export function createLunarouteMcpClient(opts: McpClientOptions): LunarouteMcpCl
 			headers: {
 				"Content-Type": "application/json",
 				Accept: "application/json, text/event-stream",
+				...(mcpSessionId !== undefined && { "Mcp-Session-Id": mcpSessionId }),
 				...opts.headers,
 			},
 			body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
 			signal,
 		});
+		mcpSessionId = response.headers.get("mcp-session-id") ?? mcpSessionId;
 		if (!response.ok) {
 			throw new Error(`MCP ${method} failed: HTTP ${response.status}`);
 		}
@@ -169,9 +174,9 @@ export function createLunarouteMcpClient(opts: McpClientOptions): LunarouteMcpCl
 		initialized = true;
 		try {
 			// Fire-and-forget politeness: stateless servers (production) just
-			// answer; stateful ones issue Mcp-Session-Id, which we cannot
-			// propagate without per-request state — such gateways are not a
-			// supported target for the direct client (use pi-mcp-adapter).
+			// answer; stateful ones issue Mcp-Session-Id, which we capture and
+			// echo on every subsequent request (kata 4ws9) — self-hosted
+			// stateful gateways are supported targets.
 			await rpc(
 				"initialize",
 				{
@@ -577,6 +582,25 @@ function pickServerTool(
 	return serverTools.find((n) => matchesAnyPattern(n, patterns));
 }
 
+/** A stable facade delegating to the current shared client — captured by
+ * tool closures at registration time, while the credentials behind it
+ * rotate. Web, image, and convert tools all register through one of these
+ * so a rotated key (re-login) reaches already-registered tools without
+ * touching their registrations (kata 4ws9, roborev job 1640). */
+export function delegatingClient(ref: { client?: LunarouteMcpClient }): LunarouteMcpClient {
+	const notConnected = () => Promise.reject(new Error("LunaRoute tools: not connected"));
+	return {
+		callTool: (name, args, signal) => ref.client?.callTool(name, args, signal) ?? notConnected(),
+		listTools: (signal) => ref.client?.listTools(signal) ?? notConnected(),
+		listToolDescriptors: (signal) => ref.client?.listToolDescriptors?.(signal) ?? notConnected(),
+	};
+}
+
+// The one client every registered web tool talks through; registerWebTools
+// swaps it on every enabled pass, so a rotated key reaches registered tools
+// even when presence detection skips re-registration (kata 4ws9).
+const currentWebClient: { client?: LunarouteMcpClient } = {};
+
 // Tools this process registered (kata bjy9): the settings UI's live-apply
 // touches only these names — never another extension's same-named tool
 // (cross-extension names are first-registration-wins, indistinguishable by
@@ -591,6 +615,7 @@ export function getRegisteredWebToolNames(): ReadonlySet<string> {
 /** Test-only: reset module-scoped state. */
 export function _resetWebToolsState(): void {
 	registeredWebToolNames.clear();
+	currentWebClient.client = undefined;
 }
 
 /** Register first-class web tools when they are both missing locally and
@@ -606,12 +631,10 @@ export async function registerWebTools(
 	}
 
 	const presence = detectWebTools(pi.getAllTools().map((t) => t.name));
-	const needSearch = !presence.hasWebSearch;
-	const needFetch = !presence.hasWebFetch;
-	if (!needSearch && !needFetch) {
-		return { webSearch: "skipped-existing", webFetch: "skipped-existing" };
-	}
-
+	// Fresh client on every enabled pass — the shared-ref swap is how a
+	// rotated key (re-login) reaches already-registered tools (kata 4ws9).
+	// Presence detection below may skip registration; it never skips the
+	// credential swap. Construction is side-effect-free (no I/O).
 	const client = createLunarouteMcpClient({
 		url: resolveMcpUrl(deps.env),
 		headers: {
@@ -620,6 +643,12 @@ export async function registerWebTools(
 		},
 		fetchImpl: deps.fetchImpl ?? (fetch as FetchLike),
 	});
+	currentWebClient.client = client;
+	const needSearch = !presence.hasWebSearch;
+	const needFetch = !presence.hasWebFetch;
+	if (!needSearch && !needFetch) {
+		return { webSearch: "skipped-existing", webFetch: "skipped-existing" };
+	}
 
 	let serverTools: string[];
 	try {
@@ -664,17 +693,20 @@ export async function registerWebTools(
 			pi.setActiveTools([...new Set([...active, tool.name])]);
 		}
 	};
+	// Tool closures capture the facade, not the client — the swap above is
+	// what carries a rotated key into already-registered tools.
+	const stableClient = delegatingClient(currentWebClient);
 
 	try {
 		if (needSearch && searchTool)
 			register(
 				buildWebSearchTool({
-					client,
+					client: stableClient,
 					mcpToolName: searchTool,
 					defaultProvider: () => resolveSearchProvider(readSettings(deps.env)),
 				}),
 			);
-		if (needFetch && fetchTool) register(buildWebFetchTool({ client, mcpToolName: fetchTool }));
+		if (needFetch && fetchTool) register(buildWebFetchTool({ client: stableClient, mcpToolName: fetchTool }));
 	} catch (err) {
 		return {
 			...registration,

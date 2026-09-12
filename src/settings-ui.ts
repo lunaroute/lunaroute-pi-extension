@@ -2,14 +2,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
 import { LUNAROUTE_PROVIDER } from "./lunaroute.js";
-import {
-	disposeLunarouteMcp,
-	isAlreadyRegisteredError,
-	isLunarouteMcpConfigured,
-	maybeShowAdapterHint,
-	maybeShowConfiguredNotice,
-	registerLunarouteMcp,
-} from "./mcp.js";
 import { readSettings, settingsPath, writeSettings, type LunarouteSettings } from "./settings.js";
 import { getRegisteredImageToolNames, invalidateImageToolRegistrations, registerImageTools } from "./image-tools.js";
 import { getRegisteredConvertToolNames, invalidateConvertToolRegistrations, registerConvertTools } from "./convert-tools.js";
@@ -38,7 +30,7 @@ export function buildSettingsItems(settings: LunarouteSettings): SettingItem[] {
 		{
 			id: "mcp",
 			label: "MCP tools",
-			description: "Hosted LunaRoute MCP server (generate_image, …) via pi-mcp-adapter",
+			description: "Master switch for LunaRoute MCP-backed tools — each family below has its own toggle",
 			currentValue: settings.mcp,
 			values: ["on", "off"],
 		},
@@ -78,7 +70,7 @@ export type SettingChangeApplier = (id: string, newValue: string) => Promise<voi
 /** Create the write-then-live-apply handler for one settings change.
  *
  * Order matters: the file is the source of truth and is written first; the
- * in-process application (setActiveTools / MCP dispose / register) is an
+ * in-process application (setActiveTools / family register/deactivate) is an
  * optimization on top and must never throw past this boundary.
  *
  * The web-tools live-apply only ever touches tools this process registered
@@ -135,7 +127,40 @@ export function createSettingChangeApplier(
 					() => generation === convertToolsApplyGeneration,
 				);
 			}
-			if (id === "mcp") await applyMcp(pi, deps, ui, getApiKey, newValue === "on");
+			if (id === "mcp") {
+				// Master switch (kata 4ws9): drive each family toward its own
+				// toggle — on activates families whose toggle is on, off
+				// deactivates them. Families whose own toggle is off are untouched
+				// in both directions (already in the requested state).
+				const on = newValue === "on";
+				if (settings.webTools === "on") {
+					await applyWebTools(pi, deps, ui, getApiKey, settings, on);
+				}
+				if (settings.imageTools === "on") {
+					const generation = ++imageToolsApplyGeneration;
+					await applyImageTools(
+						pi,
+						deps,
+						ui,
+						getApiKey,
+						settings,
+						on,
+						() => generation === imageToolsApplyGeneration,
+					);
+				}
+				if (settings.convertTools === "on") {
+					const generation = ++convertToolsApplyGeneration;
+					await applyConvertTools(
+						pi,
+						deps,
+						ui,
+						getApiKey,
+						settings,
+						on,
+						() => generation === convertToolsApplyGeneration,
+					);
+				}
+			}
 		} catch (err) {
 			// Never throw from a SettingsList change callback.
 			ui.notify(`LunaRoute settings applied partially: ${err instanceof Error ? err.message : String(err)}`, "warning");
@@ -193,45 +218,6 @@ async function applyWebTools(
 			ui.notify("Disabled by the LUNAROUTE_WEB_TOOLS environment variable.", "warning");
 			break;
 	}
-}
-
-async function applyMcp(
-	pi: ExtensionAPI,
-	deps: SettingsCommandDeps,
-	ui: { notify: NotifyFn },
-	getApiKey: () => Promise<string | undefined>,
-	on: boolean,
-): Promise<void> {
-	if (!on) {
-		await disposeLunarouteMcp();
-		ui.notify("LunaRoute MCP disabled", "info");
-		return;
-	}
-	// Mirror session_start: a user-configured LunaRoute MCP wins (the adapter
-	// keeps the configured server and rejects ours by name).
-	if (await isLunarouteMcpConfigured(deps.env)) {
-		maybeShowConfiguredNotice(ui);
-		return;
-	}
-	const key = await getApiKey();
-	if (!key) {
-		ui.notify("Not logged in — run /login lunaroute to enable MCP tools.", "info");
-		return;
-	}
-	const { registered, error } = registerLunarouteMcp(pi, key, deps);
-	if (error && isAlreadyRegisteredError(error)) {
-		maybeShowConfiguredNotice(ui);
-		return;
-	}
-	if (error) {
-		ui.notify(`LunaRoute MCP registration failed: ${error.message}`, "warning");
-		return;
-	}
-	if (!registered) {
-		maybeShowAdapterHint(ui);
-		return;
-	}
-	ui.notify("LunaRoute MCP enabled", "info");
 }
 
 /** Register the `/lunaroute` settings command. */

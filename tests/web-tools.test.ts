@@ -235,6 +235,32 @@ describe("createLunarouteMcpClient", () => {
 		await expect(client.listTools()).resolves.toEqual(["web_search"]);
 	});
 
+	test("echoes Mcp-Session-Id from the initialize response on subsequent requests", async () => {
+		// Stateful self-hosted gateways issue Mcp-Session-Id; the direct client
+		// must propagate it or such gateways reject non-initialize requests.
+		const seen: { headers: Record<string, string> }[] = [];
+		const fetchImpl: FetchLike = async (_url, init) => {
+			const body = JSON.parse(String(init?.body)) as { id: number; method: string };
+			const headers: Record<string, string> = {};
+			new Headers(init?.headers).forEach((v, k) => (headers[k] = v));
+			seen.push({ headers });
+			if (body.method === "initialize") {
+				return new Response(
+					JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { capabilities: {} } }),
+					{ status: 200, headers: { "content-type": "application/json", "mcp-session-id": "sess-123" } },
+				);
+			}
+			if (body.method === "notifications/initialized") return jsonResponse({}, 202);
+			return jsonResponse({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "web_search" }] } });
+		};
+		const client = createLunarouteMcpClient({ url: "https://mcp.test/mcp", headers: {}, fetchImpl });
+		await expect(client.listTools()).resolves.toEqual(["web_search"]);
+		const initialize = seen[0];
+		const listCall = seen[seen.length - 1];
+		expect(initialize.headers["mcp-session-id"]).toBeUndefined();
+		expect(listCall.headers["mcp-session-id"]).toBe("sess-123");
+	});
+
 	test("JSON-RPC errors throw with the server message", async () => {
 		const fetchImpl: FetchLike = async () =>
 			jsonResponse({ jsonrpc: "2.0", id: 1, error: { code: -32000, message: "org has no web tools" } });
@@ -724,5 +750,30 @@ describe("registerWebTools", () => {
 		await registerWebTools(pi, { ...REG_DEPS, fetchImpl });
 		const again = await registerWebTools(pi, { ...REG_DEPS, fetchImpl });
 		expect(again.webSearch).toBe("skipped-existing");
+	});
+
+	test("a re-registration with a rotated key reaches already-registered tools (kata 4ws9)", async () => {
+		// The adapter used to own key rotation (dispose + re-register); the
+		// direct client must pick it up via the shared-client swap instead.
+		const { pi, registered } = fakePi();
+		const log: { method: string; key?: string }[] = [];
+		const fetchImpl: FetchLike = async (_url, init) => {
+			const body = JSON.parse(String(init?.body)) as { id: number; method: string };
+			log.push({ method: body.method, key: new Headers(init?.headers).get("lunaroute-api-key") ?? undefined });
+			const result =
+				body.method === "tools/list" ? { tools: [{ name: "web_search" }] }
+				: body.method === "tools/call" ? { content: [{ type: "text", text: "ok" }], isError: false }
+				: {};
+			return jsonResponse({ jsonrpc: "2.0", id: body.id, result });
+		};
+		await registerWebTools(pi, { ...REG_DEPS, key: "lr_key_A", fetchImpl });
+		const tool = registered.find((t) => t.name === "web_search") as { execute: (id: string, params: unknown, signal?: AbortSignal, onUpdate?: unknown) => Promise<unknown> };
+		// Rotation: second registration swaps the shared client (no tools/list
+		// needed — presence detection still skips the network).
+		const again = await registerWebTools(pi, { ...REG_DEPS, key: "lr_key_B", fetchImpl });
+		expect(again.webSearch).toBe("skipped-existing");
+		await tool.execute("call-1", { query: "q" }, undefined, undefined);
+		const call = log.filter((e) => e.method === "tools/call").at(-1);
+		expect(call?.key).toBe("lr_key_B");
 	});
 });

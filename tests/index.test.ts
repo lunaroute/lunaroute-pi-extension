@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { LUNAROUTE_PROVIDER, firstRunHint } from "../src/lunaroute.js";
 import { _resetImageToolsState } from "../src/image-tools.js";
 import { _resetConvertToolsState } from "../src/convert-tools.js";
-import { MCP_CONFIGURED_NOTICE, MCP_INSTALL_HINT, MCP_RUNTIME_REGISTER_EVENT, _resetMcpState, _setAdapterConfigLoader, type McpRuntimeRegistrationRequest } from "../src/mcp.js";
+import { _resetAdapterNoticeState, _setAdapterInstalledOverride, ADAPTER_MIGRATION_NOTICE } from "../src/index.js";
 import lunarouteExtension from "../src/index.js";
 
 type SessionHandler = (event: unknown, ctx: FakeContext) => void | Promise<void>;
@@ -42,19 +42,6 @@ function fakeEventBus(): Bus {
       return () => set!.delete(handler);
     },
   };
-}
-
-/** Subscribe a fake pi-mcp-adapter listener that accepts registrations. */
-function installFakeAdapter(bus: Bus) {
-  const requests: McpRuntimeRegistrationRequest[] = [];
-  const dispose = vi.fn().mockResolvedValue(undefined);
-  bus.on(MCP_RUNTIME_REGISTER_EVENT, (raw) => {
-    const req = raw as McpRuntimeRegistrationRequest;
-    if (req.result !== undefined) return;
-    requests.push(req);
-    req.result = { ok: true, registration: { dispose } };
-  });
-  return { requests, dispose };
 }
 
 function fakePi(options: { toolNames?: string[] } = {}) {
@@ -117,14 +104,11 @@ describe("pi extension v2 wiring", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
-    _resetMcpState();
+    _resetAdapterNoticeState();
     // Hermetic agent dir (kata bjy9): readSettings in session_start must
     // never see the developer's real ~/.pi/agent/lunaroute.json.
     agentDir = mkdtempSync(join(tmpdir(), "lr-agent-"));
     vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
-    // Deterministic baseline: no user-configured MCP servers (the real loader
-    // would read the host's actual config files).
-    _setAdapterConfigLoader(async () => ({ mcpServers: {} }));
     // The hosted MCP server endpoint for first-class web tools (kata akyg):
     // default to an empty tools/list so keyed session_start tests stay hermetic.
     vi.stubGlobal(
@@ -180,13 +164,14 @@ describe("pi extension v2 wiring", () => {
     expect(headers).not.toHaveProperty("user-agent");
   });
 
-  test("registers a session_start and a session_shutdown handler", () => {
+  test("registers session_start and model_select, and no session_shutdown (kata 4ws9)", () => {
     const { pi, on, handlers } = fakePi();
     lunarouteExtension(pi);
     expect(on).toHaveBeenCalledWith("session_start", expect.any(Function));
-    expect(on).toHaveBeenCalledWith("session_shutdown", expect.any(Function));
+    expect(on).toHaveBeenCalledWith("model_select", expect.any(Function));
     expect(handlers.has("session_start")).toBe(true);
-    expect(handlers.has("session_shutdown")).toBe(true);
+    // No adapter registration means nothing to dispose on shutdown.
+    expect(handlers.has("session_shutdown")).toBe(false);
   });
 
   test("session_start notifies the first-run hint when no credential is configured", async () => {
@@ -197,9 +182,8 @@ describe("pi extension v2 wiring", () => {
     expect(ctx.ui.notify).toHaveBeenCalledWith(firstRunHint(), "info");
   });
 
-  test("session_start is silent when a credential is configured and the adapter is installed", async () => {
-    const { pi, handlers, events } = fakePi();
-    installFakeAdapter(events);
+  test("session_start is silent when logged in and the server offers nothing", async () => {
+    const { pi, handlers } = fakePi();
     lunarouteExtension(pi);
     const ctx = fakeContext({
       modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
@@ -216,100 +200,48 @@ describe("pi extension v2 wiring", () => {
     expect(ctx.ui.notify).not.toHaveBeenCalled();
   });
 
-  test("session_start registers the lunaroute MCP server when logged in and the adapter is installed", async () => {
-    const { pi, handlers, events } = fakePi();
-    const adapter = installFakeAdapter(events);
+  test("session_start shows the adapter migration notice once when pi-mcp-adapter is installed (kata 4ws9)", async () => {
+    _setAdapterInstalledOverride(() => true);
+    const { pi, handlers } = fakePi();
     lunarouteExtension(pi);
     const ctx = fakeContext({
       modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
     });
     await handlers.get("session_start")?.({}, ctx);
-    expect(adapter.requests).toHaveLength(1);
-    expect(adapter.requests[0].name).toBe("lunaroute");
-    expect(adapter.requests[0].definition.headers["LUNAROUTE-API-KEY"]).toBe("lr_key");
-    expect(adapter.requests[0].result?.ok).toBe(true);
-  });
-
-  test("session_start shows the install hint exactly once when logged in but the adapter is absent", async () => {
-    const { pi, handlers } = fakePi(); // no adapter installed
-    lunarouteExtension(pi);
-    const ctx = fakeContext({
-      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
-    });
+    expect(ctx.ui.notify).toHaveBeenCalledWith(ADAPTER_MIGRATION_NOTICE, "info");
+    // second session_start must not repeat the notice
     await handlers.get("session_start")?.({}, ctx);
-    expect(ctx.ui.notify).toHaveBeenCalledWith(MCP_INSTALL_HINT, "info");
-    // second session_start must not repeat the hint
-    await handlers.get("session_start")?.({}, ctx);
-    const mcpHints = (ctx.ui.notify.mock.calls as string[][]).filter((c) => c[0] === MCP_INSTALL_HINT);
-    expect(mcpHints).toHaveLength(1);
-  });
-
-  test("session_start warns instead of hinting when the adapter rejects the registration", async () => {
-    const { pi, handlers, events } = fakePi();
-    events.on(MCP_RUNTIME_REGISTER_EVENT, (raw) => {
-      const req = raw as McpRuntimeRegistrationRequest;
-      req.result = { ok: false, error: new Error("duplicate name") };
-    });
-    lunarouteExtension(pi);
-    const ctx = fakeContext({
-      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
-    });
-    await handlers.get("session_start")?.({}, ctx);
-    const calls = ctx.ui.notify.mock.calls as [string, string?][];
-    expect(calls.some(([m, t]) => m.startsWith("LunaRoute MCP registration failed") && t === "warning")).toBe(true);
-    expect(calls.some(([m]) => m === MCP_INSTALL_HINT)).toBe(false);
-  });
-
-  test("session_start defers to a user-configured lunaroute MCP server: no registration, one-time notice", async () => {
-    const { pi, handlers, events } = fakePi();
-    const adapter = installFakeAdapter(events);
-    _setAdapterConfigLoader(async () => ({ mcpServers: { lunaroute: { url: "https://mcp.lunaroute.com/mcp" } } }));
-    lunarouteExtension(pi);
-    const ctx = fakeContext({
-      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
-    });
-    await handlers.get("session_start")?.({}, ctx);
-    expect(adapter.requests).toHaveLength(0);
-    expect(ctx.ui.notify).toHaveBeenCalledWith(MCP_CONFIGURED_NOTICE, "info");
-    // second session_start does not repeat the notice
-    await handlers.get("session_start")?.({}, ctx);
-    const notices = (ctx.ui.notify.mock.calls as string[][]).filter((c) => c[0] === MCP_CONFIGURED_NOTICE);
+    const notices = (ctx.ui.notify.mock.calls as string[][]).filter((c) => c[0] === ADAPTER_MIGRATION_NOTICE);
     expect(notices).toHaveLength(1);
   });
 
-  test("session_start treats the adapter's 'already registered' rejection as benign (notice, not warning)", async () => {
-    const { pi, handlers, events } = fakePi();
-    _setAdapterConfigLoader(async () => ({ mcpServers: {} })); // loader saw no server, but the adapter did
-    events.on(MCP_RUNTIME_REGISTER_EVENT, (raw) => {
-      const req = raw as McpRuntimeRegistrationRequest;
-      req.result = { ok: false, error: new Error('MCP server "lunaroute" is already registered') };
-    });
+  test("session_start stays silent about the adapter when it is not installed", async () => {
+    _setAdapterInstalledOverride(() => false);
+    const { pi, handlers } = fakePi();
     lunarouteExtension(pi);
     const ctx = fakeContext({
       modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
     });
     await handlers.get("session_start")?.({}, ctx);
-    const calls = ctx.ui.notify.mock.calls as [string, string?][];
-    expect(calls.some(([m, t]) => m === MCP_CONFIGURED_NOTICE && t === "info")).toBe(true);
-    expect(calls.some(([m, t]) => m.startsWith("LunaRoute MCP registration failed") && t === "warning")).toBe(false);
+    const notices = (ctx.ui.notify.mock.calls as string[][]).filter((c) => c[0] === ADAPTER_MIGRATION_NOTICE);
+    expect(notices).toHaveLength(0);
   });
 
   test("session_start does not hint or register when not logged in (no key)", async () => {
-    const { pi, handlers, events } = fakePi();
-    const adapter = installFakeAdapter(events);
+    const { pi, handlers, registeredTools } = fakePi();
     lunarouteExtension(pi);
     const ctx = fakeContext({
       modelRegistry: { getApiKeyForProvider: () => Promise.resolve(undefined) },
     });
     await handlers.get("session_start")?.({}, ctx);
-    expect(adapter.requests).toHaveLength(0);
-    const mcpHints = (ctx.ui.notify.mock.calls as string[][]).filter((c) => c[0] === MCP_INSTALL_HINT);
-    expect(mcpHints).toHaveLength(0);
+    expect(registeredTools).toHaveLength(0);
+    // Only the first-run hint — never a migration or MCP notice.
+    const notices = (ctx.ui.notify.mock.calls as string[][]).filter((c) => c[0] !== firstRunHint());
+    expect(notices).toHaveLength(0);
   });
 
   test("session_start registers a first-class web_search tool when the hosted MCP server offers one", async () => {
-    const { pi, handlers, events, registeredTools, getActiveTools } = fakePi();
-    installFakeAdapter(events);
+    const { pi, handlers, registeredTools, getActiveTools } = fakePi();
     lunarouteExtension(pi);
     // Server offers web_search (and nothing else web-ish).
     vi.stubGlobal(
@@ -370,10 +302,61 @@ describe("pi extension v2 wiring", () => {
     );
   });
 
-  test("session_start skips MCP registration when settings disable it — web tools unaffected", async () => {
+  test("mcp master switch off blocks every first-class family (kata 4ws9)", async () => {
     writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ mcp: "off" }));
-    const { pi, handlers, events, registeredTools } = fakePi();
-    const adapter = installFakeAdapter(events);
+    const { pi, handlers, registeredTools } = fakePi();
+    lunarouteExtension(pi);
+    const fetchMock = vi.fn(async () => {
+      throw new Error("master off must make no server calls");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = fakeContext({
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
+    });
+    await handlers.get("session_start")?.({}, ctx);
+    expect(registeredTools).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(ctx.ui.notify).not.toHaveBeenCalled(); // silent skip
+  });
+
+  test("webTools off skips web registration; image/convert families still discover (kata 4ws9)", async () => {
+    writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ webTools: "off" }));
+    const { pi, handlers, registeredTools } = fakePi();
+    lunarouteExtension(pi);
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      throw new Error("family discovery failure");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = fakeContext({
+      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
+    });
+    await handlers.get("session_start")?.({}, ctx);
+    expect(registeredTools).toHaveLength(0);
+    // mcp master is on, so the image and convert families still run their
+    // discovery roundtrips (web tools never do — their family toggle is off).
+    const methods = fetchMock.mock.calls.map(([, init]) => (JSON.parse(String(init?.body)) as { method: string }).method);
+    expect(methods).toEqual(["initialize", "tools/list", "initialize", "tools/list"]);
+  });
+
+  test("login registers nothing when the mcp master switch is off (kata 4ws9)", async () => {
+    writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ mcp: "off" }));
+    const { pi, registerProvider } = fakePi();
+    const fetchMock = vi.fn(async () => {
+      throw new Error("master off must make no server calls");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    lunarouteExtension(pi);
+    const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
+    const oauth = config.oauth as { login(c: OAuthLoginCallbacks): Promise<unknown> };
+    const creds = await oauth.login(pasteCallbacks("lr_new"));
+    expect((creds as { access: string }).access).toBe("lr_new");
+    // Registration is fire-and-forget; a tick lets any misplaced call surface.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("session_start is idempotent: a second start (no shutdown) does not duplicate tools", async () => {
+    const { pi, handlers, registeredTools } = fakePi();
     lunarouteExtension(pi);
     vi.stubGlobal(
       "fetch",
@@ -387,131 +370,56 @@ describe("pi extension v2 wiring", () => {
       modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
     });
     await handlers.get("session_start")?.({}, ctx);
-    expect(adapter.requests).toHaveLength(0);
-    expect(ctx.ui.notify).not.toHaveBeenCalled(); // silent skip, no defer notice
-    expect(registeredTools.map((t) => t.name)).toEqual(["web_search"]); // webTools default on
+    await handlers.get("session_start")?.({}, ctx); // no shutdown in between
+    expect(registeredTools).toHaveLength(1); // presence detection skips re-registration
+    expect(registeredTools.map((t) => t.name)).toEqual(["web_search"]);
   });
 
-  test("session_start skips web tools when settings disable them — MCP unaffected", async () => {
-    writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ webTools: "off" }));
-    const { pi, handlers, events, registeredTools } = fakePi();
-    const adapter = installFakeAdapter(events);
+  test("login swaps in the fresh key for already-registered first-class tools (kata 4ws9)", async () => {
+    const { pi, handlers, registerProvider, registeredTools } = fakePi();
+    const seenKeys: (string | undefined)[] = [];
     lunarouteExtension(pi);
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => {
-        throw new Error("must not be called when web tools are disabled");
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { id: number; method: string };
+        if (body.method === "tools/call") {
+          seenKeys.push(new Headers(init?.headers).get("lunaroute-api-key") ?? undefined);
+          return new Response(
+            JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "ok" }], isError: false } }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "web_search" }] } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
       }),
     );
-    const ctx = fakeContext({
-      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
-    });
-    await handlers.get("session_start")?.({}, ctx);
-    expect(registeredTools).toHaveLength(0);
-    expect(adapter.requests).toHaveLength(1); // mcp default on
-  });
-
-  test("login skips MCP registration when settings disable it", async () => {
-    writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ mcp: "off" }));
-    const { pi, events, registerProvider } = fakePi();
-    const adapter = installFakeAdapter(events);
-    lunarouteExtension(pi);
-    const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
-    const oauth = config.oauth as { login(c: OAuthLoginCallbacks): Promise<unknown> };
-    const creds = await oauth.login(pasteCallbacks("lr_new"));
-    expect((creds as { access: string }).access).toBe("lr_new");
-    expect(adapter.requests).toHaveLength(0); // gated off — no re-registration
-  });
-
-  test("session_start is idempotent: a second start (no shutdown) is a no-op, not a duplicate", async () => {
-    const { pi, handlers, events } = fakePi();
-    const adapter = installFakeAdapter(events);
-    lunarouteExtension(pi);
-    const ctx = fakeContext({
-      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
-    });
-    await handlers.get("session_start")?.({}, ctx);
-    await handlers.get("session_start")?.({}, ctx); // no shutdown in between
-    expect(adapter.requests).toHaveLength(1); // second start did not re-emit
-    expect(adapter.dispose).not.toHaveBeenCalled();
-    const failed = (ctx.ui.notify.mock.calls as [string, string?][]).filter(([m]) => m.startsWith("LunaRoute MCP registration failed"));
-    expect(failed).toHaveLength(0);
-  });
-
-  test("session_shutdown disposes the MCP registration", async () => {
-    const { pi, handlers, events } = fakePi();
-    const adapter = installFakeAdapter(events);
-    lunarouteExtension(pi);
-    const ctx = fakeContext({
-      modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") },
-    });
-    await handlers.get("session_start")?.({}, ctx);
-    await handlers.get("session_shutdown")?.({}, ctx);
-    expect(adapter.dispose).toHaveBeenCalledTimes(1);
-  });
-
-  test("login re-registers MCP with the fresh key after disposing the prior registration", async () => {
-    const { pi, handlers, events, registerProvider } = fakePi();
-    const adapter = installFakeAdapter(events);
-    lunarouteExtension(pi);
     const ctx = fakeContext({
       modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_old") },
     });
     await handlers.get("session_start")?.({}, ctx);
-    expect(adapter.requests).toHaveLength(1);
-    expect(adapter.requests[0].definition.headers["LUNAROUTE-API-KEY"]).toBe("lr_old");
+    expect(registeredTools.map((t) => t.name)).toEqual(["web_search"]);
 
     const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
     const oauth = config.oauth as { login(c: OAuthLoginCallbacks): Promise<unknown> };
     const creds = await oauth.login(pasteCallbacks("lr_new"));
     expect((creds as { access: string }).access).toBe("lr_new");
 
-    expect(adapter.dispose).toHaveBeenCalledTimes(1);
-    expect(adapter.requests).toHaveLength(2);
-    expect(adapter.requests[1].definition.headers["LUNAROUTE-API-KEY"]).toBe("lr_new");
+    // The tool's captured facade now routes through the fresh-key client.
+    const tool = registeredTools[0] as unknown as { execute: (id: string, params: unknown) => Promise<unknown> };
+    await tool.execute("call-1", { query: "q" });
+    expect(seenKeys.at(-1)).toBe("lr_new");
   });
 
-  test("login surfaces the install hint via onProgress when the adapter is absent", async () => {
-    const { pi, registerProvider } = fakePi(); // no adapter installed
-    lunarouteExtension(pi);
-    const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
-    const oauth = config.oauth as { login(c: OAuthLoginCallbacks): Promise<unknown> };
-    const callbacks = pasteCallbacks("lr_new");
-    await oauth.login(callbacks);
-    expect(callbacks.onProgress).toHaveBeenCalledWith(MCP_INSTALL_HINT);
-  });
-
-  test("login does not surface the install hint when the adapter is installed", async () => {
-    const { pi, events, registerProvider } = fakePi();
-    installFakeAdapter(events);
-    lunarouteExtension(pi);
-    const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
-    const oauth = config.oauth as { login(c: OAuthLoginCallbacks): Promise<unknown> };
-    const callbacks = pasteCallbacks("lr_new");
-    await oauth.login(callbacks);
-    expect(callbacks.onProgress).not.toHaveBeenCalledWith(MCP_INSTALL_HINT);
-  });
-
-  test("login surfaces the hint only once across two logins when the adapter stays absent", async () => {
-    const { pi, registerProvider } = fakePi();
-    lunarouteExtension(pi);
-    const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
-    const oauth = config.oauth as { login(c: OAuthLoginCallbacks): Promise<unknown> };
-    const first = pasteCallbacks("lr_one");
-    await oauth.login(first);
-    const second = pasteCallbacks("lr_two");
-    await oauth.login(second);
-    expect(first.onProgress).toHaveBeenCalledWith(MCP_INSTALL_HINT);
-    expect(second.onProgress).not.toHaveBeenCalled();
-  });
 });
 
 describe("model persistence and auto-select", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
-    _resetMcpState();
-    _setAdapterConfigLoader(async () => ({ mcpServers: {} }));
+    _resetAdapterNoticeState();
   });
 
   function modelsResponse(data: unknown[]): Response {
@@ -580,8 +488,7 @@ describe("model persistence and auto-select", () => {
   });
 
   test("session_start tracks the current model from ctx.model (no auto-select afterwards)", async () => {
-    const { pi, registerProvider, setModel, handlers, events } = fakePi();
-    installFakeAdapter(events);
+    const { pi, registerProvider, setModel, handlers } = fakePi();
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
     vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([{ id: "glm-5.2" }])));
     lunarouteExtension(pi);
@@ -702,7 +609,6 @@ describe("model persistence and auto-select", () => {
 
   test("session_start registers image tools when the server offers them", async () => {
     const { pi, registerProvider, handlers, registeredTools } = fakePi();
-    installFakeAdapter(fakeEventBus()); // not used, but keeps mcp registration silent
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
     vi.stubGlobal(
       "fetch",
@@ -744,7 +650,6 @@ describe("model persistence and auto-select", () => {
   test("a /lunaroute toggle landing during the key lookup is not bypassed (roborev job 1670)", async () => {
     _resetImageToolsState(); // module state from earlier tests must not mask the regression (roborev job 1694)
     const { pi, registerProvider, handlers, registeredTools } = fakePi();
-    installFakeAdapter(fakeEventBus());
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
     const dir = mkdtempSync(join(tmpdir(), "lr-toggle-"));
     vi.stubEnv("PI_CODING_AGENT_DIR", dir);
@@ -775,7 +680,6 @@ describe("model persistence and auto-select", () => {
   test("session_start registers convert_document when the server offers it (kata zpzt)", async () => {
     _resetConvertToolsState();
     const { pi, registerProvider, handlers, registeredTools } = fakePi();
-    installFakeAdapter(fakeEventBus());
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
     vi.stubEnv("PI_CODING_AGENT_DIR", mkdtempSync(join(tmpdir(), "lr-convert-")));
     vi.stubGlobal(
