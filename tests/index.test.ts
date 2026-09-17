@@ -467,6 +467,23 @@ describe("model persistence and auto-select", () => {
     });
   });
 
+  test("prefers glm-5.3-flash over the first catalog model when present (kata nnvh)", async () => {
+    const { pi, registerProvider, setModel } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        modelsResponse([
+          { id: "glm-5.3", display_name: "GLM 5.3", context_window: 8192, max_output_tokens: 1024 },
+          { id: "glm-5.3-flash", display_name: "GLM 5.3 Flash", context_window: 8192, max_output_tokens: 1024 },
+        ])),
+    );
+    lunarouteExtension(pi);
+    await refreshModelsOf(registerProvider)(fakeRefreshContext());
+    expect(setModel).toHaveBeenCalledTimes(1);
+    expect(setModel.mock.calls[0][0]).toMatchObject({ id: "glm-5.3-flash" });
+  });
+
   test("does not auto-select when the user already has a non-unknown model", async () => {
     const { pi, registerProvider, setModel, handlers } = fakePi();
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");

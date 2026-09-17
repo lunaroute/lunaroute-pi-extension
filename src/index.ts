@@ -9,6 +9,7 @@ import {
   readPersistedModels,
   resolveRoutingUrl,
   toStoredModel,
+  PREFERRED_DEFAULT_MODEL_ID,
 } from "./lunaroute.js";
 import { lunarouteOAuth } from "./login.js";
 import { createRefreshModels } from "./discovery.js";
@@ -141,13 +142,16 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
         if (!models.length) return;
         const noModel = !currentModel || (currentModel.provider === "unknown" && currentModel.id === "unknown");
         if (!noModel) return;
+        // Prefer the flash tier so a fresh login doesn't start on the full
+        // GLM 5.3 (kata nnvh); first catalog model otherwise.
+        const picked = models.find((m) => m.id === PREFERRED_DEFAULT_MODEL_ID) ?? models[0];
         void pi
-          .setModel(toStoredModel(models[0], resolveRoutingUrl(process.env)))
+          .setModel(toStoredModel(picked, resolveRoutingUrl(process.env)))
           .then((applied) => {
             // false = auth not configured yet (e.g. unauthenticated
             // refresh) — benign, nothing to report.
             if (!applied) return;
-            notifyUser(`LunaRoute: set ${models[0].name ?? models[0].id} as default model (change with /model)`, "info");
+            notifyUser(`LunaRoute: set ${picked.name ?? picked.id} as default model (change with /model)`, "info");
           })
           .catch((error: unknown) => {
             const message = error instanceof Error ? error.message : String(error);

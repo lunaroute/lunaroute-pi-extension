@@ -27,6 +27,10 @@ export const DEFAULT_API_URL = "https://api.lunaroute.com";
 export const DEFAULT_FRONT_URL = "https://app.lunaroute.com";
 export const DEFAULT_MCP_URL = "https://mcp.lunaroute.com/mcp";
 
+// Preferred default for the post-login auto-pick (kata nnvh): the flash tier
+// over the full GLM 5.3, so a fresh login doesn't start on the flagship.
+export const PREFERRED_DEFAULT_MODEL_ID = "glm-5.3-flash";
+
 export function resolveRoutingUrl(env: NodeJS.ProcessEnv): string {
   return env[LUNAROUTE_ENV_ROUTING_URL] || DEFAULT_ROUTING_URL;
 }
