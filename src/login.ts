@@ -37,6 +37,12 @@ export async function startLoopbackServer(): Promise<LoopbackServer> {
     const { code, state } = parseCallbackQuery(url.toString());
     res.statusCode = 200;
     res.setHeader("Content-Type", "text/html");
+    // kata n9t6 (saas d16f / roborev 1546): let the approval page verify
+    // delivery via a cors fetch + res.ok — only readable cross-origin with
+    // this header. Static "close this tab" body, no secrets; the GET was
+    // never CORS-gated, so `*` grants no new reach. Mirrors the opencode
+    // listener (y992) and the saas CLI.
+    res.setHeader("Access-Control-Allow-Origin", "*");
     res.end("<html><body><h2>LunaRoute authorized.</h2><p>You can close this tab and return to pi.</p></body></html>");
     resolveCb({ code, state });
   });
