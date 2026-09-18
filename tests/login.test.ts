@@ -211,6 +211,8 @@ describe("startLoopbackServer (real node:http)", () => {
       const res = await fetch(`http://127.0.0.1:${server.port}/callback?code=abc&state=xyz`);
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("text/html");
+      // kata n9t6: the approval page verifies delivery via cors fetch + res.ok.
+      expect(res.headers.get("access-control-allow-origin")).toBe("*");
       const body = await res.text();
       expect(body).toContain("LunaRoute authorized.");
       await expect(server.waitForCallback()).resolves.toEqual({ code: "abc", state: "xyz" });
