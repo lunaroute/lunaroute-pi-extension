@@ -409,6 +409,8 @@ describe("per-model input limits (kata 2aam)", () => {
     };
     const result = mapCatalogEntry({
       id: "glm-5.3-vision",
+      context_window: 131_072,
+      max_output_tokens: 16_384,
       capabilities: { vision: true },
       client_compat: { pi: { inputLimits } },
     });
@@ -418,7 +420,7 @@ describe("per-model input limits (kata 2aam)", () => {
   });
 
   test("mapCatalogEntry applies the conservative fallback for a vision model without catalog inputLimits", () => {
-    const result = mapCatalogEntry({ id: "vision-no-limits", capabilities: { vision: true } });
+    const result = mapCatalogEntry({ id: "vision-no-limits", context_window: 131_072, max_output_tokens: 16_384, capabilities: { vision: true } });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.model.inputLimits).toEqual(FALLBACK);
@@ -427,6 +429,8 @@ describe("per-model input limits (kata 2aam)", () => {
   test("mapCatalogEntry adds the fallback resize while preserving catalog limits that lack one (job 2302)", () => {
     const result = mapCatalogEntry({
       id: "vision-partial-limits",
+      context_window: 131_072,
+      max_output_tokens: 16_384,
       capabilities: { vision: true },
       client_compat: { pi: { inputLimits: { maxRequestBytes: 16_777_216, images: { maxPerRequest: 5 } } } },
     });
@@ -439,7 +443,7 @@ describe("per-model input limits (kata 2aam)", () => {
   });
 
   test("mapCatalogEntry attaches no inputLimits to a text-only model", () => {
-    const result = mapCatalogEntry({ id: "text-only", capabilities: { tools: true } });
+    const result = mapCatalogEntry({ id: "text-only", context_window: 131_072, max_output_tokens: 16_384, capabilities: { tools: true } });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.model.inputLimits).toBeUndefined();
@@ -448,6 +452,8 @@ describe("per-model input limits (kata 2aam)", () => {
   test("a pi block containing only inputLimits does not leak it into compat", () => {
     const result = mapCatalogEntry({
       id: "leak-check",
+      context_window: 131_072,
+      max_output_tokens: 16_384,
       capabilities: { reasoning: true, vision: true },
       client_compat: { pi: { inputLimits: { images: { resize: { maxBytes: 400_000 } } } } },
     });

@@ -259,6 +259,8 @@ describe("lunaroute refreshModels persist + restore", () => {
         modelsResponse([
           {
             id: "deepseek-4.1-flash-background",
+            context_window: 131_072,
+            max_output_tokens: 16_384,
             capabilities: { vision: true, tools: true },
             client_compat: { pi: { inputLimits } },
           },
