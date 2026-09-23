@@ -25,6 +25,13 @@ hosted LunaRoute MCP server (image generation and more) is wired up for you too.
   process.
 - **Attribution on every request.** Each LunaRoute request carries a per-session
   agent + session id so traffic is traceable on the LunaRoute side.
+- **Per-model image sizing.** Vision models are registered with the image resize
+  profile the LunaRoute catalog carries (`client_compat.pi.inputLimits`), so Pi
+  downscales attachments, `read` images, and tool-result images before they enter
+  history — keeping requests under the gateway's size cap. Requires Pi **>= 0.87**;
+  the field is inert on older hosts. Without a catalog profile the extension
+  applies a conservative default (2048x2048, 1 MiB), and `modelOverrides` in
+  `models.json` can tune it per model.
 
 ## Requirements
 

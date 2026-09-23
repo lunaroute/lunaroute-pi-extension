@@ -250,6 +250,27 @@ describe("lunaroute refreshModels persist + restore", () => {
     expect(arg.persist.checkedAt).toEqual(expect.any(Number));
   });
 
+  test("carries per-model inputLimits into the returned and persisted catalog (kata 2aam)", async () => {
+    const publish = vi.fn(async (_publication: unknown) => true);
+    const inputLimits = { images: { resize: { maxWidth: 800, maxHeight: 800, maxBytes: 150_000 } } };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        modelsResponse([
+          {
+            id: "deepseek-4.1-flash-background",
+            capabilities: { vision: true, tools: true },
+            client_compat: { pi: { inputLimits } },
+          },
+        ]),
+      ),
+    );
+    const models = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" })(fakeContext({ publish }));
+    expect(models[0]).toMatchObject({ id: "deepseek-4.1-flash-background", input: ["text", "image"], inputLimits });
+    const arg = publish.mock.calls[0][0] as { persist: { models: Model<Api>[] } };
+    expect(arg.persist.models[0]).toMatchObject({ id: "deepseek-4.1-flash-background", inputLimits });
+  });
+
   test("retains the persisted catalog when the network fetch throws", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
     const models = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" })(

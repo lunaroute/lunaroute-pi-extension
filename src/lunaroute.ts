@@ -107,9 +107,35 @@ export function resolveCredentialKey(credential: Credential | undefined): string
   return undefined;
 }
 
+/** Per-model input limits carried by the gateway catalog and accepted by pi's
+ * model schema. Only `images.resize` is consumed by pi (>=0.87), applied when
+ * images enter history; `maxRequestBytes` / `maxPerMessage` / `maxPerRequest`
+ * are schema-only today and passed through for the day pi enforces them.
+ * Local structural type: the 0.84.x pi types have no `inputLimits`, and
+ * emitting it is inert there (`applyExtension` is a bare object spread). */
+export type InputLimits = {
+  maxRequestBytes?: number;
+  images?: {
+    resize?: { maxWidth?: number; maxHeight?: number; maxBytes?: number; jpegQuality?: number };
+    maxPerMessage?: number;
+    maxPerRequest?: number;
+  };
+};
+
+/** ProviderModelConfig widened with the (newer-pi) `inputLimits` field. */
+export type LunarouteModelConfig = ProviderModelConfig & { inputLimits?: InputLimits };
+
+/** Conservative per-image profile for vision models when the LunaRoute catalog
+ * does not provide `client_compat.pi.inputLimits`. pi's own default is
+ * 2000x2000 / 4.5 MiB base64, so this only ever shrinks (kata 2aam). */
+export const LUNAROUTE_FALLBACK_INPUT_LIMITS: InputLimits = {
+  images: { resize: { maxWidth: 2048, maxHeight: 2048, maxBytes: 1_000_000, jpegQuality: 80 } },
+};
+
 export type GatewayPiBlock = Partial<OpenAICompletionsCompat> & {
   thinkingLevelMap?: ThinkingLevelMap;
   compat?: OpenAICompletionsCompat;
+  inputLimits?: InputLimits;
 };
 
 export type GatewayModelObject = {
@@ -123,7 +149,7 @@ export type GatewayModelObject = {
 };
 
 export type CatalogMappingResult =
-  | { ok: true; model: ProviderModelConfig }
+  | { ok: true; model: LunarouteModelConfig }
   | { ok: false; reason: "reasoning_missing_pi_block"; id: string }
   | { ok: false; reason: "missing_window_metadata"; id: string }
   | { ok: false; reason: "non_chat_capability"; id: string; capability: string };
@@ -142,7 +168,9 @@ function normalizeGatewayPiBlock(pi: GatewayPiBlock): {
   thinkingLevelMap?: ThinkingLevelMap;
   compat?: OpenAICompletionsCompat;
 } {
-  const { thinkingLevelMap, compat: nestedCompat, ...flatCompat } = pi;
+  // Exclude inputLimits from the flat-compat remainder: it is a non-compat
+  // field and would otherwise leak into `compat` (kata 2aam).
+  const { thinkingLevelMap, compat: nestedCompat, inputLimits: _inputLimits, ...flatCompat } = pi;
   return {
     thinkingLevelMap,
     compat: nestedCompat ?? (Object.keys(flatCompat).length > 0 ? flatCompat : undefined),
@@ -173,7 +201,7 @@ export function mapCatalogEntry(entry: GatewayModelObject): CatalogMappingResult
     return { ok: false, reason: "reasoning_missing_pi_block", id: entry.id };
   }
 
-  const model: ProviderModelConfig = {
+  const model: LunarouteModelConfig = {
     id: entry.id,
     name: entry.display_name ?? entry.id,
     reasoning,
@@ -187,6 +215,12 @@ export function mapCatalogEntry(entry: GatewayModelObject): CatalogMappingResult
     if (thinkingLevelMap) model.thinkingLevelMap = thinkingLevelMap;
     if (compat) model.compat = compat;
   }
+  // Vision models get per-model image limits: the catalog's if it ships them,
+  // otherwise a conservative fallback. Deliberately outside the reasoning guard
+  // — most vision models are not reasoning models (kata 2aam).
+  if (input.includes("image")) {
+    model.inputLimits = gatewayPi?.inputLimits ?? LUNAROUTE_FALLBACK_INPUT_LIMITS;
+  }
   return { ok: true, model };
 }
 
@@ -198,7 +232,10 @@ export function missingPiBlockWarning(id: string): string {
  * Mirrors provider-composer's applyExtension output (api/provider/baseUrl
  * filled from the provider config) so the entry survives a structuredClone
  * through the ModelsStore and re-applies cleanly on the next launch. */
-export function toStoredModel(model: ProviderModelConfig, baseUrl: string): Model<Api> {
+export function toStoredModel(
+  model: LunarouteModelConfig,
+  baseUrl: string,
+): Model<Api> & { inputLimits?: InputLimits } {
   return {
     id: model.id,
     name: model.name,
@@ -212,6 +249,7 @@ export function toStoredModel(model: ProviderModelConfig, baseUrl: string): Mode
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
     compat: model.compat,
+    inputLimits: model.inputLimits,
   };
 }
 
