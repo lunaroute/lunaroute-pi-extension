@@ -29,6 +29,7 @@ import {
   readPersistedModels,
   resolveRoutingUrl,
   firstRunHint,
+  toStoredModel,
 } from "../src/lunaroute.js";
 
 describe("lunaroute v2 helpers", () => {
@@ -393,5 +394,90 @@ describe("readPersistedModels", () => {
     expect(readPersistedModels({ PI_CODING_AGENT_DIR: dir })).toEqual([]);
     writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [{ nope: true }, storedModel] } }));
     expect(readPersistedModels({ PI_CODING_AGENT_DIR: dir })).toEqual([storedModel]);
+  });
+});
+
+describe("per-model input limits (kata 2aam)", () => {
+  const FALLBACK = {
+    images: { resize: { maxWidth: 2048, maxHeight: 2048, maxBytes: 1_000_000, jpegQuality: 80 } },
+  };
+
+  test("mapCatalogEntry passes through client_compat.pi.inputLimits for a non-reasoning vision model", () => {
+    const inputLimits = {
+      maxRequestBytes: 16_777_216,
+      images: { resize: { maxWidth: 2560, maxHeight: 1600, maxBytes: 500_000, jpegQuality: 80 } },
+    };
+    const result = mapCatalogEntry({
+      id: "glm-5.3-vision",
+      context_window: 131_072,
+      max_output_tokens: 16_384,
+      capabilities: { vision: true },
+      client_compat: { pi: { inputLimits } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.inputLimits).toEqual(inputLimits);
+  });
+
+  test("mapCatalogEntry applies the conservative fallback for a vision model without catalog inputLimits", () => {
+    const result = mapCatalogEntry({ id: "vision-no-limits", context_window: 131_072, max_output_tokens: 16_384, capabilities: { vision: true } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.inputLimits).toEqual(FALLBACK);
+  });
+
+  test("mapCatalogEntry adds the fallback resize while preserving catalog limits that lack one (job 2302)", () => {
+    const result = mapCatalogEntry({
+      id: "vision-partial-limits",
+      context_window: 131_072,
+      max_output_tokens: 16_384,
+      capabilities: { vision: true },
+      client_compat: { pi: { inputLimits: { maxRequestBytes: 16_777_216, images: { maxPerRequest: 5 } } } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.inputLimits).toEqual({
+      maxRequestBytes: 16_777_216,
+      images: { maxPerRequest: 5, resize: FALLBACK.images.resize },
+    });
+  });
+
+  test("mapCatalogEntry attaches no inputLimits to a text-only model", () => {
+    const result = mapCatalogEntry({ id: "text-only", context_window: 131_072, max_output_tokens: 16_384, capabilities: { tools: true } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.inputLimits).toBeUndefined();
+  });
+
+  test("a pi block containing only inputLimits does not leak it into compat", () => {
+    const result = mapCatalogEntry({
+      id: "leak-check",
+      context_window: 131_072,
+      max_output_tokens: 16_384,
+      capabilities: { reasoning: true, vision: true },
+      client_compat: { pi: { inputLimits: { images: { resize: { maxBytes: 400_000 } } } } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.compat).toBeUndefined();
+    expect(result.model.inputLimits).toEqual({ images: { resize: { maxBytes: 400_000 } } });
+  });
+
+  test("toStoredModel preserves inputLimits so it survives the ModelsStore round-trip", () => {
+    const inputLimits = { images: { resize: { maxWidth: 800, maxHeight: 800, maxBytes: 150_000 } } };
+    const stored = toStoredModel(
+      {
+        id: "deepseek-4.1-flash-background",
+        name: "DeepSeek 4.1 Flash",
+        reasoning: false,
+        input: ["text", "image"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 0,
+        maxTokens: 0,
+        inputLimits,
+      },
+      "http://gw/v1",
+    );
+    expect(stored.inputLimits).toEqual(inputLimits);
   });
 });
