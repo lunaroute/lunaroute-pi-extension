@@ -424,6 +424,20 @@ describe("per-model input limits (kata 2aam)", () => {
     expect(result.model.inputLimits).toEqual(FALLBACK);
   });
 
+  test("mapCatalogEntry adds the fallback resize while preserving catalog limits that lack one (job 2302)", () => {
+    const result = mapCatalogEntry({
+      id: "vision-partial-limits",
+      capabilities: { vision: true },
+      client_compat: { pi: { inputLimits: { maxRequestBytes: 16_777_216, images: { maxPerRequest: 5 } } } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.inputLimits).toEqual({
+      maxRequestBytes: 16_777_216,
+      images: { maxPerRequest: 5, resize: FALLBACK.images.resize },
+    });
+  });
+
   test("mapCatalogEntry attaches no inputLimits to a text-only model", () => {
     const result = mapCatalogEntry({ id: "text-only", capabilities: { tools: true } });
     expect(result.ok).toBe(true);

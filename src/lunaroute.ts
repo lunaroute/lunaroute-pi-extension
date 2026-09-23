@@ -125,11 +125,13 @@ export type InputLimits = {
 /** ProviderModelConfig widened with the (newer-pi) `inputLimits` field. */
 export type LunarouteModelConfig = ProviderModelConfig & { inputLimits?: InputLimits };
 
-/** Conservative per-image profile for vision models when the LunaRoute catalog
- * does not provide `client_compat.pi.inputLimits`. pi's own default is
+/** Fallback per-image resize profile for vision models. pi's own default is
  * 2000x2000 / 4.5 MiB base64, so this only ever shrinks (kata 2aam). */
-export const LUNAROUTE_FALLBACK_INPUT_LIMITS: InputLimits = {
-  images: { resize: { maxWidth: 2048, maxHeight: 2048, maxBytes: 1_000_000, jpegQuality: 80 } },
+export const LUNAROUTE_FALLBACK_IMAGE_RESIZE = {
+  maxWidth: 2048,
+  maxHeight: 2048,
+  maxBytes: 1_000_000,
+  jpegQuality: 80,
 };
 
 export type GatewayPiBlock = Partial<OpenAICompletionsCompat> & {
@@ -215,11 +217,20 @@ export function mapCatalogEntry(entry: GatewayModelObject): CatalogMappingResult
     if (thinkingLevelMap) model.thinkingLevelMap = thinkingLevelMap;
     if (compat) model.compat = compat;
   }
-  // Vision models get per-model image limits: the catalog's if it ships them,
-  // otherwise a conservative fallback. Deliberately outside the reasoning guard
-  // — most vision models are not reasoning models (kata 2aam).
+  // Vision models get per-model image limits. Preserve every catalog-provided
+  // limit, but always ensure a resize profile: a catalog that ships only, say,
+  // maxRequestBytes must still get the fallback resize, otherwise pi has no
+  // profile and can still 413 (job 2302). Deliberately outside the reasoning
+  // guard — most vision models are not reasoning models (kata 2aam).
   if (input.includes("image")) {
-    model.inputLimits = gatewayPi?.inputLimits ?? LUNAROUTE_FALLBACK_INPUT_LIMITS;
+    const catalogLimits = gatewayPi?.inputLimits;
+    model.inputLimits = {
+      ...catalogLimits,
+      images: {
+        ...catalogLimits?.images,
+        resize: catalogLimits?.images?.resize ?? LUNAROUTE_FALLBACK_IMAGE_RESIZE,
+      },
+    };
   }
   return { ok: true, model };
 }
