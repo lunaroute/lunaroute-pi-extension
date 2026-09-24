@@ -8,10 +8,13 @@ import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 export const LUNAROUTE_ENV_AGENT_DIR = "PI_CODING_AGENT_DIR";
 
 export const LUNAROUTE_PROVIDER = "lunaroute";
-// Every LunaRoute model is served over the OpenAI-completions API; this is also
-// set on the provider config, so toStoredModel mirrors what applyExtension
-// would produce and the catalog round-trips through Pi's ModelsStore.
-export const LUNAROUTE_API = "openai-completions" as const;
+export const LUNAROUTE_ENV_API_OVERRIDE = "LUNAROUTE_API";
+// The wire formats the gateway serves. The resolved value feeds the provider
+// config's api and every model's api, so a persisted per-model api cannot
+// outrank the config through applyExtension's definition-over-config
+// precedence.
+export type WireApi = "openai-responses" | "openai-completions";
+export const DEFAULT_API: WireApi = "openai-responses";
 export const LUNAROUTE_ENV_ROUTING_URL = "LUNAROUTE_ROUTING_URL";
 export const LUNAROUTE_ENV_API_URL = "LUNAROUTE_API_URL";
 export const LUNAROUTE_ENV_FRONT_URL = "LUNAROUTE_FRONT_URL";
@@ -42,6 +45,27 @@ export function resolveFrontUrl(env: NodeJS.ProcessEnv): string {
 }
 export function resolveMcpUrl(env: NodeJS.ProcessEnv): string {
   return env[LUNAROUTE_ENV_MCP_URL] || DEFAULT_MCP_URL;
+}
+
+const warnedApiValues = new Set<string>();
+
+/** An unrecognized non-empty value falls back to openai-completions rather
+ * than the Responses default: a non-empty value is a deliberate override, and
+ * a failed switch should fail toward the established format. */
+export function resolveApi(env: NodeJS.ProcessEnv): WireApi {
+  const raw = env[LUNAROUTE_ENV_API_OVERRIDE];
+  if (typeof raw !== "string" || raw.trim() === "") return DEFAULT_API;
+  const value = raw.trim().toLowerCase();
+  if (value === "responses") return "openai-responses";
+  if (value === "completions") return "openai-completions";
+  if (!warnedApiValues.has(value)) {
+    warnedApiValues.add(value);
+    console.warn(
+      `[lunaroute] unrecognized LUNAROUTE_API=${JSON.stringify(raw)}; ` +
+        `falling back to openai-completions (valid values: responses | completions)`,
+    );
+  }
+  return "openai-completions";
 }
 
 export function buildAttributionHeaders(version: string, sessionId: string): Record<string, string> {
@@ -241,18 +265,21 @@ export function missingPiBlockWarning(id: string): string {
   return `LunaRoute model "${id}" supports reasoning but the catalog did not include Pi compatibility metadata. Skipping it. (Requires LunaRoute server issue vkd3.)`;
 }
 
-/** Build the persisted Model object for a mapped catalog entry.
- * Mirrors provider-composer's applyExtension output (api/provider/baseUrl
- * filled from the provider config) so the entry survives a structuredClone
- * through the ModelsStore and re-applies cleanly on the next launch. */
+/** Build the persisted Model object for a mapped catalog entry. Mirrors
+ * provider-composer's applyExtension output (provider/baseUrl filled from the
+ * provider config) so the entry survives a structuredClone through Pi's
+ * ModelsStore and re-applies cleanly on the next launch. The resolved api is
+ * written verbatim and model.api is dropped: nothing in src produces it, and
+ * honoring it would let a stale stored pin defeat LUNAROUTE_API. */
 export function toStoredModel(
   model: LunarouteModelConfig,
   baseUrl: string,
+  api: Api,
 ): Model<Api> & { inputLimits?: InputLimits } {
   return {
     id: model.id,
     name: model.name,
-    api: model.api ?? LUNAROUTE_API,
+    api,
     provider: LUNAROUTE_PROVIDER,
     baseUrl: model.baseUrl ?? baseUrl,
     reasoning: model.reasoning,
@@ -290,12 +317,18 @@ export function readPersistedModels(env: NodeJS.ProcessEnv): Model<Api>[] {
     const parsed = JSON.parse(raw) as Record<string, { models?: unknown }>;
     const models = parsed[LUNAROUTE_PROVIDER]?.models;
     if (!Array.isArray(models)) return [];
-    return models.filter(
-      (m): m is Model<Api> =>
-        typeof m === "object" && m !== null &&
-        typeof (m as Model<Api>).id === "string" &&
-        typeof (m as Model<Api>).api === "string",
-    );
+    const api = resolveApi(env);
+    return models
+      .filter(
+        (m): m is Model<Api> =>
+          typeof m === "object" && m !== null &&
+          typeof (m as Model<Api>).id === "string",
+      )
+      // Re-stamp the resolved api over whatever the snapshot holds: these
+      // become the provider's model definitions, and applyExtension resolves
+      // definition.api ahead of the provider config's api, so a stored value
+      // written by an earlier launch would otherwise outrank LUNAROUTE_API.
+      .map((m) => ({ ...m, api }));
   } catch {
     return [];
   }

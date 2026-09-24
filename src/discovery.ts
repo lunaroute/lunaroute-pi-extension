@@ -2,10 +2,12 @@ import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import {
   mapCatalogEntry,
+  resolveApi,
   resolveCredentialKey,
   resolveRoutingUrl,
   toStoredModel,
   type GatewayModelObject,
+  type WireApi,
 } from "./lunaroute.js";
 
 export type DiscoveryDeps = {
@@ -16,11 +18,13 @@ export type DiscoveryDeps = {
 };
 
 /** Restored catalog from a prior session, as ProviderModelConfig[]. Stored
- * entries are Model<Api> objects (a structural superset); returning them lets
- * provider-composer's applyExtension re-fill api/baseUrl/provider, making the
- * registry non-empty before any network call. */
-function restore(stored: RefreshModelsContext["stored"]): ProviderModelConfig[] {
-  return stored ? [...stored.models] : [];
+ * entries are Model<Api> objects (a structural superset). The stored api is
+ * overwritten with the resolved wire format before returning: the refresh
+ * result becomes the provider's model definitions, and applyExtension
+ * resolves definition.api ahead of the provider config's api, so a stored
+ * value would otherwise outrank LUNAROUTE_API. */
+function restore(stored: RefreshModelsContext["stored"], api: WireApi): ProviderModelConfig[] {
+  return stored ? stored.models.map((m) => ({ ...m, api })) : [];
 }
 
 export function createRefreshModels(
@@ -31,13 +35,14 @@ export function createRefreshModels(
   const onCatalogRefreshed = deps.onCatalogRefreshed;
   return async (context) => {
     const baseUrl = resolveRoutingUrl(env);
+    const api = resolveApi(env);
     // Phase 1 (offline / restore): surface the persisted catalog so getModels()
     // is non-empty at startup — Pi's last-model restore and Desktop/RPC model
     // listings read getModels() synchronously, before any network refresh.
-    if (!context.allowNetwork) return restore(context.stored);
+    if (!context.allowNetwork) return restore(context.stored, api);
 
     const key = resolveCredentialKey(context.credential);
-    if (!key) return restore(context.stored);
+    if (!key) return restore(context.stored, api);
 
     let models: ProviderModelConfig[];
     try {
@@ -46,7 +51,7 @@ export function createRefreshModels(
         headers: { Authorization: `Bearer ${key}` },
       });
       if (!res.ok) {
-        models = restore(context.stored);
+        models = restore(context.stored, api);
       } else {
         const body = (await res.json()) as { data?: GatewayModelObject[] };
         const entries = body.data ?? [];
@@ -62,12 +67,15 @@ export function createRefreshModels(
         // A store-write failure must not discard the fresh catalog — the in-memory
         // list still updates via the wrapper, and the next refresh retries persist.
         await context.publish({
-          persist: { models: fetched.map((m) => toStoredModel(m, baseUrl)), checkedAt: Date.now() },
+          persist: {
+            models: fetched.map((m) => toStoredModel(m, baseUrl, api)),
+            checkedAt: Date.now(),
+          },
         }).catch(() => {});
         models = fetched;
       }
     } catch {
-      models = restore(context.stored);
+      models = restore(context.stored, api);
     }
     // Notify exactly once per authenticated network attempt, with the list we
     // return: fresh on success, the persisted catalog when the attempt failed

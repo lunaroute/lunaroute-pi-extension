@@ -217,6 +217,7 @@ for dev/staging via environment variables before starting Pi:
 | Variable | Default | Purpose |
 |---|---|---|
 | `LUNAROUTE_ROUTING_URL` | `https://gw.lunaroute.com/v1` | Gateway base URL (provider `baseUrl` + `/models`) |
+| `LUNAROUTE_API` | `responses` | Wire format: `responses` (OpenAI Responses API, `gw/v1/responses`) or `completions` (chat completions kill switch). An unrecognized value warns and falls back to `completions`. |
 | `LUNAROUTE_API_URL` | `https://api.lunaroute.com` | API host for `/v1/auth/exchange` |
 | `LUNAROUTE_FRONT_URL` | `https://app.lunaroute.com` | Web app host for `/device-auth/pi` browser login |
 | `LUNAROUTE_MCP_URL` | `https://mcp.lunaroute.com/mcp` | Hosted MCP server URL behind the first-class MCP-backed tools |

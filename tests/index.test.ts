@@ -133,11 +133,23 @@ describe("pi extension v2 wiring", () => {
     const [, config] = registerProvider.mock.calls[0] as [string, Record<string, unknown>];
     expect(config.name).toBe("LunaRoute");
     expect(config.baseUrl).toBe("http://gw/v1");
-    expect(config.api).toBe("openai-completions");
+    expect(config.api).toBe("openai-responses");
     expect(config.authHeader).toBe(true);
     expect(config.models).toEqual([]);
     expect(config.oauth).toBeDefined();
     expect(typeof config.refreshModels).toBe("function");
+  });
+
+  test("registers the provider on the completions wire format when LUNAROUTE_API is the kill switch", () => {
+    const { pi, registerProvider } = fakePi();
+    vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
+    vi.stubEnv("LUNAROUTE_API", "completions");
+    vi.stubEnv("PI_CODING_AGENT_DIR", mkdtempSync(join(tmpdir(), "lr-store-")));
+
+    lunarouteExtension(pi);
+
+    const [, config] = registerProvider.mock.calls[0] as [string, Record<string, unknown>];
+    expect(config.api).toBe("openai-completions");
   });
 
   test("seeds registration models from the persisted snapshot when present", () => {
@@ -149,7 +161,21 @@ describe("pi extension v2 wiring", () => {
 
     lunarouteExtension(pi);
     const [, config] = registerProvider.mock.calls[0] as [string, Record<string, unknown>];
-    expect(config.models).toEqual([stored]);
+    expect(config.models).toEqual([{ ...stored, api: "openai-responses" }]);
+  });
+
+  test("seeded models carry the resolved api over the persisted model's api (kata dtp8)", () => {
+    const { pi, registerProvider } = fakePi();
+    const dir = mkdtempSync(join(tmpdir(), "lr-seed-"));
+    const stored = { id: "glm-5.3-flash-background", api: "openai-responses", provider: "lunaroute", baseUrl: "https://gw/v1", reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [stored], checkedAt: 1 } }));
+    vi.stubEnv("PI_CODING_AGENT_DIR", dir);
+    vi.stubEnv("LUNAROUTE_API", "completions");
+
+    lunarouteExtension(pi);
+    const [, config] = registerProvider.mock.calls[0] as [string, Record<string, unknown>];
+    expect(config.api).toBe("openai-completions");
+    expect(config.models).toEqual([{ ...stored, api: "openai-completions" }]);
   });
 
   test("attribution headers share one session id and omit User-Agent", () => {
@@ -462,7 +488,7 @@ describe("model persistence and auto-select", () => {
     expect(setModel.mock.calls[0][0]).toMatchObject({
       id: "glm-5.2",
       provider: LUNAROUTE_PROVIDER,
-      api: "openai-completions",
+      api: "openai-responses",
       baseUrl: "http://gw/v1",
     });
   });
@@ -550,7 +576,7 @@ describe("model persistence and auto-select", () => {
     expect(setModel.mock.calls[0][0]).toMatchObject({
       id: "cached-1",
       provider: LUNAROUTE_PROVIDER,
-      api: "openai-completions",
+      api: "openai-responses",
       baseUrl: "http://gw/v1",
     });
   });
