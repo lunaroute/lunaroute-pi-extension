@@ -21,6 +21,7 @@ import {
   generateState,
   mapCatalogEntry,
   missingPiBlockWarning,
+  NON_CHAT_CAPABILITIES,
   parseCallbackQuery,
   resolveApiUrl,
   resolveCredentialKey,
@@ -155,12 +156,12 @@ describe("lunaroute v2 helpers", () => {
     expect(result).toEqual({ ok: false, reason: "non_chat_capability", id: "flux2-klein", capability: "image_generation" });
   });
 
-  test("mapCatalogEntry maps normally when image_generation is absent or explicitly false", () => {
+  test("mapCatalogEntry maps normally when any non-chat capability is absent or explicitly false (kata 230t)", () => {
     const capabilitySets: (Record<string, boolean> | undefined)[] = [
       undefined,
       {},
-      { image_generation: false },
       { tools: true },
+      ...NON_CHAT_CAPABILITIES.map((capability) => ({ [capability]: false })),
     ];
     for (const capabilities of capabilitySets) {
       const result = mapCatalogEntry({ id: "chat-1", capabilities, context_window: 8192, max_output_tokens: 1024 });
@@ -171,15 +172,14 @@ describe("lunaroute v2 helpers", () => {
     }
   });
 
-  test("mapCatalogEntry rejects image-generation before the reasoning/pi-block check", () => {
-    const result = mapCatalogEntry({
-      id: "flux2-reasoner",
-      capabilities: { image_generation: true, reasoning: true },
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.reason).toBe("non_chat_capability");
-    expect(result.reason).not.toBe("reasoning_missing_pi_block");
+  test("mapCatalogEntry rejects every NON_CHAT_CAPABILITIES tag with a typed reason, before the reasoning check (kata 230t)", () => {
+    for (const capability of NON_CHAT_CAPABILITIES) {
+      const result = mapCatalogEntry({
+        id: `non-chat-${capability}`,
+        capabilities: { [capability]: true, reasoning: true },
+      });
+      expect(result).toEqual({ ok: false, reason: "non_chat_capability", id: `non-chat-${capability}`, capability });
+    }
   });
 
   test("mapCatalogEntry does not map an image-generation model as a vision model", () => {
@@ -199,32 +199,15 @@ describe("lunaroute v2 helpers", () => {
     expect(rerank).toEqual({ ok: false, reason: "non_chat_capability", id: "bge-rr-v2-m3", capability: "rerank" });
   });
 
-  test("mapCatalogEntry maps normally when embeddings/rerank are absent or explicitly false", () => {
-    const capabilitySets: (Record<string, boolean> | undefined)[] = [
-      undefined,
-      {},
-      { embeddings: false, rerank: false },
-    ];
-    for (const capabilities of capabilitySets) {
-      const result = mapCatalogEntry({ id: "chat-1", capabilities, context_window: 8192, max_output_tokens: 1024 });
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      expect(result.model.id).toBe("chat-1");
-      expect(result.model.input).toEqual(["text"]);
-    }
-  });
-
-  test("mapCatalogEntry rejects embeddings/rerank before the reasoning/pi-block check", () => {
-    for (const capability of ["embeddings", "rerank"] as const) {
-      const result = mapCatalogEntry({
-        id: `non-chat-${capability}`,
-        capabilities: { [capability]: true, reasoning: true },
-      });
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.reason).toBe("non_chat_capability");
-      expect(result.reason).not.toBe("reasoning_missing_pi_block");
-    }
+  test("mapCatalogEntry skips System One decision models with a typed reason (kata 230t)", () => {
+    const result = mapCatalogEntry({
+      id: "kev-0.8b",
+      display_name: "Kev 0.8B",
+      context_window: 32768,
+      max_output_tokens: 1024,
+      capabilities: { systemone: true },
+    });
+    expect(result).toEqual({ ok: false, reason: "non_chat_capability", id: "kev-0.8b", capability: "systemone" });
   });
 
   test("mapCatalogEntry maps a reasoning model with the pi block (thinkingLevelMap + compat)", () => {
