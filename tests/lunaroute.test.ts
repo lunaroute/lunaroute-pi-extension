@@ -1,12 +1,14 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DEFAULT_API,
   DEFAULT_API_URL,
   DEFAULT_FRONT_URL,
   DEFAULT_MCP_URL,
   DEFAULT_ROUTING_URL,
+  LUNAROUTE_ENV_API_OVERRIDE,
   LUNAROUTE_ENV_API_URL,
   LUNAROUTE_ENV_FRONT_URL,
   LUNAROUTE_ENV_MCP_URL,
@@ -29,6 +31,7 @@ import {
   resolveMcpUrl,
   readPersistedModels,
   resolveRoutingUrl,
+  resolveApi,
   firstRunHint,
   toStoredModel,
 } from "../src/lunaroute.js";
@@ -38,12 +41,14 @@ describe("lunaroute v2 helpers", () => {
     expect(LUNAROUTE_PROVIDER).toBe("lunaroute");
     expect(LUNAROUTE_ENV_ROUTING_URL).toBe("LUNAROUTE_ROUTING_URL");
     expect(LUNAROUTE_ENV_API_URL).toBe("LUNAROUTE_API_URL");
+    expect(LUNAROUTE_ENV_API_OVERRIDE).toBe("LUNAROUTE_API");
     expect(LUNAROUTE_ENV_FRONT_URL).toBe("LUNAROUTE_FRONT_URL");
     expect(LUNAROUTE_ENV_MCP_URL).toBe("LUNAROUTE_MCP_URL");
     expect(DEFAULT_ROUTING_URL).toBe("https://gw.lunaroute.com/v1");
     expect(DEFAULT_API_URL).toBe("https://api.lunaroute.com");
     expect(DEFAULT_FRONT_URL).toBe("https://app.lunaroute.com");
     expect(DEFAULT_MCP_URL).toBe("https://mcp.lunaroute.com/mcp");
+    expect(DEFAULT_API).toBe("openai-responses");
   });
 
   test("URL resolvers prefer env vars, fall back to defaults", () => {
@@ -55,6 +60,29 @@ describe("lunaroute v2 helpers", () => {
     expect(resolveFrontUrl({ LUNAROUTE_FRONT_URL: "http://localhost:3100" })).toBe("http://localhost:3100");
     expect(resolveMcpUrl({})).toBe(DEFAULT_MCP_URL);
     expect(resolveMcpUrl({ LUNAROUTE_MCP_URL: "http://localhost:9999/mcp" })).toBe("http://localhost:9999/mcp");
+  });
+
+  test("resolveApi defaults to Responses, honors the completions kill switch, and fails toward completions on garbage", () => {
+    expect(resolveApi({})).toBe("openai-responses");
+    expect(resolveApi({ LUNAROUTE_API: "" })).toBe("openai-responses");
+    expect(resolveApi({ LUNAROUTE_API: "  " })).toBe("openai-responses");
+    expect(resolveApi({ LUNAROUTE_API: "responses" })).toBe("openai-responses");
+    expect(resolveApi({ LUNAROUTE_API: "  RESPONSES  " })).toBe("openai-responses");
+    expect(resolveApi({ LUNAROUTE_API: "completions" })).toBe("openai-completions");
+    expect(resolveApi({ LUNAROUTE_API: "  Completions  " })).toBe("openai-completions");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const removed of ["openai-responses", "openai-completions", "chat", "respons"]) {
+        expect(resolveApi({ LUNAROUTE_API: removed })).toBe("openai-completions");
+      }
+      expect(warn).toHaveBeenCalledTimes(4);
+      // The same bad value warns once per process, not once per call.
+      expect(resolveApi({ LUNAROUTE_API: "chat" })).toBe("openai-completions");
+      expect(warn).toHaveBeenCalledTimes(4);
+      expect(String(warn.mock.calls[0][0])).toContain("LUNAROUTE_API");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("buildAttributionHeaders returns only the three v1 headers with a shared session id", () => {
@@ -356,10 +384,10 @@ describe("readPersistedModels", () => {
   test("reads the lunaroute snapshot from Pi's models-store.json under PI_CODING_AGENT_DIR", () => {
     const dir = mkdtempSync(join(tmpdir(), "lr-store-"));
     writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [storedModel], checkedAt: 1 } }));
-    const models = readPersistedModels({ PI_CODING_AGENT_DIR: dir });
+    const models = readPersistedModels({ PI_CODING_AGENT_DIR: dir, LUNAROUTE_API: "responses" });
     expect(models).toHaveLength(1);
     expect(models[0].id).toBe("glm-5.3-flash-background");
-    expect(models[0].api).toBe("openai-completions");
+    expect(models[0].api).toBe("openai-responses");
   });
 
   test("falls back to ~/.pi/agent when PI_CODING_AGENT_DIR is unset", () => {
@@ -376,7 +404,7 @@ describe("readPersistedModels", () => {
     writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [] } }));
     expect(readPersistedModels({ PI_CODING_AGENT_DIR: dir })).toEqual([]);
     writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [{ nope: true }, storedModel] } }));
-    expect(readPersistedModels({ PI_CODING_AGENT_DIR: dir })).toEqual([storedModel]);
+    expect(readPersistedModels({ PI_CODING_AGENT_DIR: dir })).toEqual([{ ...storedModel, api: "openai-responses" }]);
   });
 });
 
@@ -460,7 +488,27 @@ describe("per-model input limits (kata 2aam)", () => {
         inputLimits,
       },
       "http://gw/v1",
+      "openai-responses",
     );
     expect(stored.inputLimits).toEqual(inputLimits);
+    expect(stored.api).toBe("openai-responses");
+  });
+
+  test("toStoredModel applies the resolved api over a stale model api", () => {
+    const stored = toStoredModel(
+      {
+        id: "pinned",
+        name: "Pinned",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 0,
+        maxTokens: 0,
+        api: "openai-completions",
+      },
+      "http://gw/v1",
+      "openai-responses",
+    );
+    expect(stored.api).toBe("openai-responses");
   });
 });

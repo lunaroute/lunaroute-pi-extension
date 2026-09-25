@@ -1,12 +1,12 @@
 import { VERSION, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
-  LUNAROUTE_API,
   LUNAROUTE_PROVIDER,
   buildAttributionHeaders,
   firstRunHint,
   generateSessionId,
   readPersistedModels,
+  resolveApi,
   resolveRoutingUrl,
   toStoredModel,
   PREFERRED_DEFAULT_MODEL_ID,
@@ -100,7 +100,7 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
   pi.registerProvider(LUNAROUTE_PROVIDER, {
     name: "LunaRoute",
     baseUrl: resolveRoutingUrl(process.env),
-    api: LUNAROUTE_API,
+    api: resolveApi(process.env),
     authHeader: true,
     headers: buildAttributionHeaders(VERSION, sessionId),
     // Re-register on login so a rotated key takes effect without restarting
@@ -146,7 +146,9 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
         // GLM 5.3 (kata nnvh); first catalog model otherwise.
         const picked = models.find((m) => m.id === PREFERRED_DEFAULT_MODEL_ID) ?? models[0];
         void pi
-          .setModel(toStoredModel(picked, resolveRoutingUrl(process.env)))
+          .setModel(
+            toStoredModel(picked, resolveRoutingUrl(process.env), resolveApi(process.env)),
+          )
           .then((applied) => {
             // false = auth not configured yet (e.g. unauthenticated
             // refresh) — benign, nothing to report.

@@ -216,6 +216,9 @@ describe("lunaroute refreshModels persist + restore", () => {
       fakeContext({ allowNetwork: false, stored: { models: [storedModel("cached-1")], checkedAt: 1 }, publish }),
     );
     expect(models.map((m) => m.id)).toEqual(["cached-1"]);
+    // The stored api (openai-completions here) is re-stamped with the resolved
+    // value, or the offline phase would republish the stale pin as a definition.
+    expect(models.map((m) => m.api)).toEqual(["openai-responses"]);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
   });
@@ -244,7 +247,7 @@ describe("lunaroute refreshModels persist + restore", () => {
     expect(arg.persist.models[0]).toMatchObject({
       id: "chat-1",
       provider: "lunaroute",
-      api: "openai-completions",
+      api: "openai-responses",
       baseUrl: "http://gw/v1",
     });
     expect(arg.persist.checkedAt).toEqual(expect.any(Number));
@@ -279,6 +282,7 @@ describe("lunaroute refreshModels persist + restore", () => {
       fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
     );
     expect(models.map((m) => m.id)).toEqual(["cached-1"]);
+    expect(models.map((m) => m.api)).toEqual(["openai-responses"]);
   });
 
   test("retains the persisted catalog on a non-2xx response", async () => {
@@ -287,6 +291,17 @@ describe("lunaroute refreshModels persist + restore", () => {
       fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
     );
     expect(models.map((m) => m.id)).toEqual(["cached-1"]);
+    expect(models.map((m) => m.api)).toEqual(["openai-responses"]);
+  });
+
+  test("restore honors the LUNAROUTE_API kill switch over the stored api (offline rollback)", async () => {
+    const storedOnResponses = { ...storedModel("cached-1"), api: "openai-responses" as const };
+    vi.stubGlobal("fetch", vi.fn());
+    const models = await createRefreshModels({ LUNAROUTE_API: "completions" })(
+      fakeContext({ allowNetwork: false, stored: { models: [storedOnResponses], checkedAt: 1 } }),
+    );
+    expect(models.map((m) => m.id)).toEqual(["cached-1"]);
+    expect(models.map((m) => m.api)).toEqual(["openai-completions"]);
   });
 
   test("invokes onCatalogRefreshed once with the fresh catalog after a successful fetch", async () => {
