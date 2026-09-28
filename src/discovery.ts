@@ -5,6 +5,7 @@ import {
   resolveApi,
   resolveCredentialKey,
   resolveRoutingUrl,
+  stampWireApi,
   toStoredModel,
   type GatewayModelObject,
   type WireApi,
@@ -18,13 +19,10 @@ export type DiscoveryDeps = {
 };
 
 /** Restored catalog from a prior session, as ProviderModelConfig[]. Stored
- * entries are Model<Api> objects (a structural superset). The stored api is
- * overwritten with the resolved wire format before returning: the refresh
- * result becomes the provider's model definitions, and applyExtension
- * resolves definition.api ahead of the provider config's api, so a stored
- * value would otherwise outrank LUNAROUTE_API. */
+ * entries are Model<Api> objects (a structural superset); the resolved wire
+ * format is stamped over the stored api (see stampWireApi). */
 function restore(stored: RefreshModelsContext["stored"], api: WireApi): ProviderModelConfig[] {
-  return stored ? stored.models.map((m) => ({ ...m, api })) : [];
+  return stored ? stampWireApi(stored.models, api) : [];
 }
 
 export function createRefreshModels(

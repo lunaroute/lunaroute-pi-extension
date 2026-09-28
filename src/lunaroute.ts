@@ -68,6 +68,14 @@ export function resolveApi(env: NodeJS.ProcessEnv): WireApi {
   return "openai-completions";
 }
 
+/** Re-stamp the resolved wire api over stored models: the stamped entries
+ * become the provider's model definitions, and applyExtension resolves
+ * definition.api ahead of the provider config's api (see WireApi above), so a
+ * value persisted by an earlier launch would otherwise outrank LUNAROUTE_API. */
+export function stampWireApi(models: readonly Model<Api>[], api: WireApi): Model<Api>[] {
+  return models.map((m) => ({ ...m, api }));
+}
+
 export function buildAttributionHeaders(version: string, sessionId: string): Record<string, string> {
   return {
     "lunaroute-agent": `pi/${version}`,
@@ -318,17 +326,14 @@ export function readPersistedModels(env: NodeJS.ProcessEnv): Model<Api>[] {
     const models = parsed[LUNAROUTE_PROVIDER]?.models;
     if (!Array.isArray(models)) return [];
     const api = resolveApi(env);
-    return models
-      .filter(
+    return stampWireApi(
+      models.filter(
         (m): m is Model<Api> =>
           typeof m === "object" && m !== null &&
           typeof (m as Model<Api>).id === "string",
-      )
-      // Re-stamp the resolved api over whatever the snapshot holds: these
-      // become the provider's model definitions, and applyExtension resolves
-      // definition.api ahead of the provider config's api, so a stored value
-      // written by an earlier launch would otherwise outrank LUNAROUTE_API.
-      .map((m) => ({ ...m, api }));
+      ),
+      api,
+    );
   } catch {
     return [];
   }
