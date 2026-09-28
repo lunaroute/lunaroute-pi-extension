@@ -217,7 +217,9 @@ describe("lunaroute refreshModels persist + restore", () => {
     );
     expect(models.map((m) => m.id)).toEqual(["cached-1"]);
     // The stored api (openai-completions here) is re-stamped with the resolved
-    // value, or the offline phase would republish the stale pin as a definition.
+    // value, or the offline phase would return the stale pin as a model
+    // definition, which applyExtension resolves ahead of the provider
+    // config's api.
     expect(models.map((m) => m.api)).toEqual(["openai-responses"]);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
