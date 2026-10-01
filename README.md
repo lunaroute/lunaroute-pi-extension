@@ -32,6 +32,14 @@ hosted LunaRoute MCP server (image generation and more) is wired up for you too.
   the field is inert on older hosts. Without a catalog profile the extension
   applies a conservative default (2048x2048, 1 MiB), and `modelOverrides` in
   `models.json` can tune it per model.
+- **System One decision models as classifier models.** The LunaRoute catalog's
+  System One models (`capabilities.systemone`) are registered as Pi classifier
+  models, so `codemode` scripts and extensions can call them with
+  `models.getAvailableOfType("classifier")` + `models.classify()` (enable
+  `codemode` with `"defaultTools": ["+codemode"]`). Requires Pi **>= 0.99.0**;
+  inert below (System One entries stay filtered out). Classifier models never
+  appear in `/model`, and a disabled feature or an org policy that is off
+  surfaces as `ClassifierResult.errorMessage` (classification never throws).
 
 ## Requirements
 

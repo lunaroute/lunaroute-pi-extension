@@ -1,15 +1,22 @@
-import { VERSION, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { VERSION, type ExtensionAPI, type ProviderConfig } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
   LUNAROUTE_PROVIDER,
+  SYSTEMONE_CLASSIFIER_API,
   buildAttributionHeaders,
+  createSystemOneClassifier,
   firstRunHint,
   generateSessionId,
+  isClassifierConfig,
   readPersistedModels,
   resolveApi,
   resolveRoutingUrl,
+  supportsClassifierModels,
   toStoredModel,
   PREFERRED_DEFAULT_MODEL_ID,
+  type LunarouteClassifierImpl,
+  type LunarouteModelConfig,
+  type LunarouteProviderConfig,
 } from "./lunaroute.js";
 import { lunarouteOAuth } from "./login.js";
 import { createRefreshModels } from "./discovery.js";
@@ -66,9 +73,21 @@ export function _setAdapterInstalledOverride(fn: (() => boolean) | undefined): v
   adapterInstalledOverride = fn;
 }
 
-export default function lunarouteExtension(pi: ExtensionAPI): void {
+export default function lunarouteExtension(pi: ExtensionAPI, version: string = VERSION): void {
   const sessionId = generateSessionId();
-  const mcpDeps = { env: process.env, version: VERSION, sessionId };
+  const mcpDeps = { env: process.env, version, sessionId };
+  // Classifier models (pi >= 0.99.0) are gated off on older hosts so the
+  // registration keeps v0.13.0 behavior there (systemone stays filtered).
+  const classifiersEnabled = supportsClassifierModels(version);
+  // pi's built-in System One transport, loaded on the first classify call. The
+  // specifier is a widened string so tsc/vitest never resolve a module absent
+  // from the 0.84.x floor; the gate makes it unreachable there.
+  const loadSystemOne = async (): Promise<{ typesafeSystemOneApi: () => LunarouteClassifierImpl }> => {
+    const specifier: string = "@earendil-works/pi-ai/api/typesafe-system-one.lazy";
+    return (await import(/* @vite-ignore */ specifier)) as {
+      typesafeSystemOneApi: () => LunarouteClassifierImpl;
+    };
+  };
   // Tracks the session's current model so the post-login refresh can tell
   // whether the user already has a model (don't override) or has none yet.
   let currentModel: Model<Api> | undefined;
@@ -97,12 +116,12 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
 
   registerLunarouteSettingsCommand(pi, mcpDeps);
 
-  pi.registerProvider(LUNAROUTE_PROVIDER, {
+  const providerConfig: LunarouteProviderConfig = {
     name: "LunaRoute",
     baseUrl: resolveRoutingUrl(process.env),
     api: resolveApi(process.env),
     authHeader: true,
-    headers: buildAttributionHeaders(VERSION, sessionId),
+    headers: buildAttributionHeaders(version, sessionId),
     // Re-register on login so a rotated key takes effect without restarting
     // Pi: dispose first (the adapter throws on a duplicate server name), then
     // register with the freshly obtained key — no getApiKeyForProvider race.
@@ -128,6 +147,7 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
       },
     },
     refreshModels: createRefreshModels(process.env, {
+      classifiers: classifiersEnabled,
       // After a refresh, if the user has no model selected (first /login
       // lunaroute, before any default is saved), auto-pick the first
       // LunaRoute model so they don't have to run /model manually — from the
@@ -139,12 +159,14 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
       // defaultModelPerProvider map is static and not extensible for dynamic
       // providers) — so we say clearly what we picked right after it.
       onCatalogRefreshed: (models) => {
-        if (!models.length) return;
+        // Classifier models are not chat models: never auto-pick one.
+        const chatModels = models.filter((m): m is LunarouteModelConfig => !isClassifierConfig(m));
+        if (!chatModels.length) return;
         const noModel = !currentModel || (currentModel.provider === "unknown" && currentModel.id === "unknown");
         if (!noModel) return;
         // Prefer the flash tier so a fresh login doesn't start on the full
         // GLM 5.3 (kata nnvh); first catalog model otherwise.
-        const picked = models.find((m) => m.id === PREFERRED_DEFAULT_MODEL_ID) ?? models[0];
+        const picked = chatModels.find((m) => m.id === PREFERRED_DEFAULT_MODEL_ID) ?? chatModels[0];
         void pi
           .setModel(
             toStoredModel(picked, resolveRoutingUrl(process.env), resolveApi(process.env)),
@@ -161,8 +183,12 @@ export default function lunarouteExtension(pi: ExtensionAPI): void {
           });
       },
     }),
-    models: readPersistedModels(process.env),
-  });
+    models: readPersistedModels(process.env, classifiersEnabled),
+    ...(classifiersEnabled
+      ? { classifiers: { [SYSTEMONE_CLASSIFIER_API]: createSystemOneClassifier(loadSystemOne) } }
+      : {}),
+  };
+  pi.registerProvider(LUNAROUTE_PROVIDER, providerConfig as unknown as ProviderConfig);
 
   pi.on("session_start", async (_event, ctx) => {
     currentModel = ctx.model;
