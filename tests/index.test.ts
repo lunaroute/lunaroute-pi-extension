@@ -827,3 +827,43 @@ describe("rotated-key reprompt (kata azhv)", () => {
     warn.mockRestore();
   });
 });
+
+describe("classifier model registration (kata g2d6)", () => {
+  test("a host below 0.99.0 registers no classifiers field", () => {
+    const { pi, registerProvider } = fakePi();
+    lunarouteExtension(pi);
+    const [, config] = registerProvider.mock.calls[0] as [string, Record<string, unknown>];
+    expect(config.classifiers).toBeUndefined();
+  });
+
+  test("a host at 0.99.0+ registers the lazy typesafe-system-one classifier", () => {
+    const { pi, registerProvider } = fakePi();
+    lunarouteExtension(pi, "0.99.1");
+    const [, config] = registerProvider.mock.calls[0] as [string, Record<string, unknown>];
+    const classifiers = config.classifiers as Record<string, { classify: unknown }>;
+    expect(Object.keys(classifiers)).toEqual(["typesafe-system-one"]);
+    expect(typeof classifiers["typesafe-system-one"].classify).toBe("function");
+  });
+
+  test("a 0.99.0+ host seeds stored classifier models but never auto-picks one", () => {
+    const { pi, registerProvider } = fakePi();
+    const dir = mkdtempSync(join(tmpdir(), "lr-cls-seed-"));
+    const classifier = {
+      type: "classifier",
+      id: "kev-4b",
+      name: "kev-4b",
+      api: "typesafe-system-one",
+      provider: "lunaroute",
+      baseUrl: "https://gw/v1",
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+    };
+    writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [classifier], checkedAt: 1 } }));
+    vi.stubEnv("PI_CODING_AGENT_DIR", dir);
+
+    lunarouteExtension(pi, "0.99.1");
+    const [, config] = registerProvider.mock.calls[0] as [string, Record<string, unknown>];
+    expect(config.models).toEqual([{ ...classifier, baseUrl: "https://gw.lunaroute.com/v1" }]);
+  });
+});

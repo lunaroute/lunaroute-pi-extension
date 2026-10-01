@@ -1,11 +1,14 @@
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-import type { RefreshModelsContext } from "@earendil-works/pi-ai";
+import type { Api, Model, RefreshModelsContext } from "@earendil-works/pi-ai";
 import {
+  isClassifierConfig,
   mapCatalogEntry,
+  mapClassifierEntry,
   resolveApi,
   resolveCredentialKey,
   resolveRoutingUrl,
-  stampWireApi,
+  selectStoredModels,
+  toStoredClassifier,
   toStoredModel,
   type GatewayModelObject,
   type WireApi,
@@ -13,16 +16,29 @@ import {
 
 export type DiscoveryDeps = {
   fetch?: typeof fetch;
+  /** Host supports classifier models (pi >= 0.99.0). When false, System One
+   * entries stay rejected and stored classifiers are dropped. */
+  classifiers?: boolean;
   /** Called after a successful network fetch with the mapped models, so the
    * caller can react (e.g. auto-select a model when none is chosen). */
   onCatalogRefreshed?: (models: ProviderModelConfig[]) => void;
 };
 
-/** Restored catalog from a prior session, as ProviderModelConfig[]. Stored
- * entries are Model<Api> objects (a structural superset); the resolved wire
- * format is stamped over the stored api (see stampWireApi). */
-function restore(stored: RefreshModelsContext["stored"], api: WireApi): ProviderModelConfig[] {
-  return stored ? stampWireApi(stored.models, api) : [];
+/** Restored catalog from a prior session, as definitions. Stored chat entries
+ * are Model<Api> objects (a structural superset); the resolved wire format is
+ * stamped over the stored api. Stored classifier entries keep their api (the
+ * classifier api) but get the resolved routing URL stamped over any stored
+ * baseUrl, so a persisted definition cannot outlive a LUNAROUTE_ROUTING_URL
+ * change. */
+function restore(
+  stored: RefreshModelsContext["stored"],
+  api: WireApi,
+  classifiers: boolean,
+  baseUrl: string,
+): ProviderModelConfig[] {
+  return stored
+    ? (selectStoredModels(stored.models, api, classifiers, baseUrl) as unknown as ProviderModelConfig[])
+    : [];
 }
 
 export function createRefreshModels(
@@ -31,16 +47,17 @@ export function createRefreshModels(
 ): (context: RefreshModelsContext) => Promise<ProviderModelConfig[]> {
   const doFetch = deps.fetch ?? fetch;
   const onCatalogRefreshed = deps.onCatalogRefreshed;
+  const classifiers = deps.classifiers === true;
   return async (context) => {
     const baseUrl = resolveRoutingUrl(env);
     const api = resolveApi(env);
     // Phase 1 (offline / restore): surface the persisted catalog so getModels()
     // is non-empty at startup — Pi's last-model restore and Desktop/RPC model
     // listings read getModels() synchronously, before any network refresh.
-    if (!context.allowNetwork) return restore(context.stored, api);
+    if (!context.allowNetwork) return restore(context.stored, api, classifiers, baseUrl);
 
     const key = resolveCredentialKey(context.credential);
-    if (!key) return restore(context.stored, api);
+    if (!key) return restore(context.stored, api, classifiers, baseUrl);
 
     let models: ProviderModelConfig[];
     try {
@@ -49,13 +66,20 @@ export function createRefreshModels(
         headers: { Authorization: `Bearer ${key}` },
       });
       if (!res.ok) {
-        models = restore(context.stored, api);
+        models = restore(context.stored, api, classifiers, baseUrl);
       } else {
         const body = (await res.json()) as { data?: GatewayModelObject[] };
         const entries = body.data ?? [];
 
         const fetched: ProviderModelConfig[] = [];
         for (const entry of entries) {
+          if (classifiers) {
+            const classifier = mapClassifierEntry(entry);
+            if (classifier) {
+              fetched.push(classifier as unknown as ProviderModelConfig);
+              continue;
+            }
+          }
           const result = mapCatalogEntry(entry);
           if (result.ok) fetched.push(result.model);
         }
@@ -66,14 +90,16 @@ export function createRefreshModels(
         // list still updates via the wrapper, and the next refresh retries persist.
         await context.publish({
           persist: {
-            models: fetched.map((m) => toStoredModel(m, baseUrl, api)),
+            models: fetched.map((m) =>
+              isClassifierConfig(m) ? toStoredClassifier(m, baseUrl) : toStoredModel(m, baseUrl, api),
+            ) as unknown as Model<Api>[],
             checkedAt: Date.now(),
           },
         }).catch(() => {});
         models = fetched;
       }
     } catch {
-      models = restore(context.stored, api);
+      models = restore(context.stored, api, classifiers, baseUrl);
     }
     // Notify exactly once per authenticated network attempt, with the list we
     // return: fresh on success, the persisted catalog when the attempt failed

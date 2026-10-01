@@ -34,6 +34,11 @@ import {
   resolveApi,
   firstRunHint,
   toStoredModel,
+  SYSTEMONE_CLASSIFIER_API,
+  supportsClassifierModels,
+  mapClassifierEntry,
+  toStoredClassifier,
+  createSystemOneClassifier,
 } from "../src/lunaroute.js";
 
 describe("lunaroute v2 helpers", () => {
@@ -510,5 +515,143 @@ describe("per-model input limits (kata 2aam)", () => {
       "openai-responses",
     );
     expect(stored.api).toBe("openai-responses");
+  });
+});
+
+describe("System One classifier models (kata g2d6)", () => {
+  const systemoneEntry = (over: Record<string, unknown> = {}) => ({
+    id: "kev-4b",
+    context_window: 8192,
+    max_output_tokens: 2048,
+    capabilities: { systemone: true },
+    ...over,
+  });
+
+  test("supportsClassifierModels gates at 0.99.0 and rejects malformed/pre-release versions", () => {
+    expect(supportsClassifierModels("0.98.9")).toBe(false);
+    expect(supportsClassifierModels("0.99.0")).toBe(true);
+    expect(supportsClassifierModels("0.99.1")).toBe(true);
+    expect(supportsClassifierModels("0.100.0")).toBe(true);
+    expect(supportsClassifierModels("1.0.0")).toBe(true);
+    expect(supportsClassifierModels("0.99.0-beta.1")).toBe(false);
+    expect(supportsClassifierModels("0.99")).toBe(false);
+    expect(supportsClassifierModels("")).toBe(false);
+    expect(supportsClassifierModels("nonsense")).toBe(false);
+  });
+
+  test("mapCatalogEntry still rejects systemone (the pre-0.99 fallback)", () => {
+    expect(mapCatalogEntry(systemoneEntry())).toEqual({
+      ok: false,
+      reason: "non_chat_capability",
+      id: "kev-4b",
+      capability: "systemone",
+    });
+  });
+
+  test("mapClassifierEntry maps a systemone entry to a text classifier definition", () => {
+    expect(mapClassifierEntry(systemoneEntry())).toEqual({
+      type: "classifier",
+      id: "kev-4b",
+      name: "kev-4b",
+      api: SYSTEMONE_CLASSIFIER_API,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+    });
+  });
+
+  test("mapClassifierEntry keeps input text-only even for a vision-capable decision model", () => {
+    const mapped = mapClassifierEntry(systemoneEntry({ id: "djev", capabilities: { systemone: true, vision: true } }));
+    expect(mapped?.input).toEqual(["text"]);
+  });
+
+  test("mapClassifierEntry returns undefined for a non-systemone entry or one without a window", () => {
+    expect(mapClassifierEntry({ id: "chat", context_window: 8192, max_output_tokens: 1024 })).toBeUndefined();
+    expect(mapClassifierEntry({ id: "no-window", capabilities: { systemone: true } })).toBeUndefined();
+  });
+
+  test("toStoredClassifier keeps the classifier api and stamps provider + baseUrl", () => {
+    const stored = toStoredClassifier(
+      {
+        type: "classifier",
+        id: "kev-4b",
+        name: "kev-4b",
+        api: SYSTEMONE_CLASSIFIER_API,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 8192,
+      },
+      "http://gw/v1",
+    );
+    expect(stored).toMatchObject({
+      type: "classifier",
+      api: SYSTEMONE_CLASSIFIER_API,
+      provider: "lunaroute",
+      baseUrl: "http://gw/v1",
+    });
+  });
+
+  test("createSystemOneClassifier delegates to the lazily loaded implementation once", async () => {
+    const classify = vi.fn(async () => ({ answers: {} }));
+    const load = vi.fn(async () => ({ typesafeSystemOneApi: () => ({ classify }) }));
+    const impl = createSystemOneClassifier(load);
+    await impl.classify({}, {});
+    await impl.classify({}, {});
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(classify).toHaveBeenCalledTimes(2);
+  });
+
+  test("readPersistedModels keeps a stored classifier (api intact) only when classifiers are supported", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lr-store-"));
+    const classifier = {
+      type: "classifier",
+      id: "kev-4b",
+      name: "kev-4b",
+      api: SYSTEMONE_CLASSIFIER_API,
+      provider: "lunaroute",
+      baseUrl: "http://gw/v1",
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+    };
+    const chat = {
+      id: "chat-1",
+      api: "openai-completions",
+      provider: "lunaroute",
+      baseUrl: "http://gw/v1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+      maxTokens: 1024,
+    };
+    writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [classifier, chat], checkedAt: 1 } }));
+
+    const on = readPersistedModels({ PI_CODING_AGENT_DIR: dir, LUNAROUTE_API: "responses" }, true);
+    expect(on.map((m) => m.id)).toEqual(["kev-4b", "chat-1"]);
+    expect(on[0]).toMatchObject({ type: "classifier", api: SYSTEMONE_CLASSIFIER_API, baseUrl: DEFAULT_ROUTING_URL });
+    expect(on[1].api).toBe("openai-responses");
+
+    const off = readPersistedModels({ PI_CODING_AGENT_DIR: dir, LUNAROUTE_API: "responses" }, false);
+    expect(off.map((m) => m.id)).toEqual(["chat-1"]);
+  });
+
+  test("re-stamps the resolved routing URL onto a restored classifier (a stale pin must not survive)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lr-store-"));
+    const classifier = {
+      type: "classifier",
+      id: "kev-4b",
+      name: "kev-4b",
+      api: SYSTEMONE_CLASSIFIER_API,
+      provider: "lunaroute",
+      baseUrl: "https://old.example/v1",
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+    };
+    writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [classifier], checkedAt: 1 } }));
+
+    const models = readPersistedModels({ PI_CODING_AGENT_DIR: dir, LUNAROUTE_ROUTING_URL: "http://new.example/v1" }, true);
+    expect(models[0]).toMatchObject({ type: "classifier", api: SYSTEMONE_CLASSIFIER_API, baseUrl: "http://new.example/v1" });
   });
 });

@@ -370,3 +370,80 @@ describe("lunaroute refreshModels persist + restore", () => {
     expect(onCatalogRefreshed).not.toHaveBeenCalled();
   });
 });
+
+describe("lunaroute refreshModels classifier models (kata g2d6)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const chatEntry = { id: "chat-1", context_window: 8192, max_output_tokens: 1024, capabilities: { tools: true } };
+  const systemoneEntry = (id: string) => ({ id, context_window: 8192, max_output_tokens: 2048, capabilities: { systemone: true } });
+
+  test("with classifiers enabled, maps systemone entries and persists them with api intact, alongside chat", async () => {
+    const publish = vi.fn(async (_publication: unknown) => true);
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([chatEntry, systemoneEntry("kev-4b")])));
+    const models = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" }, { classifiers: true })(
+      fakeContext({ publish }),
+    );
+    expect(models.map((m) => (m as { id: string }).id)).toEqual(["chat-1", "kev-4b"]);
+    expect(models[1]).toMatchObject({ type: "classifier", api: "typesafe-system-one", input: ["text"], contextWindow: 8192 });
+    const arg = publish.mock.calls[0][0] as { persist: { models: { id: string; type?: string; api: string }[] } };
+    expect(arg.persist.models.map((m) => m.id)).toEqual(["chat-1", "kev-4b"]);
+    expect(arg.persist.models[1]).toMatchObject({
+      type: "classifier",
+      api: "typesafe-system-one",
+      provider: "lunaroute",
+      baseUrl: "http://gw/v1",
+    });
+  });
+
+  test("without classifier support, systemone entries are dropped from the returned and persisted catalog", async () => {
+    const publish = vi.fn(async (_publication: unknown) => true);
+    vi.stubGlobal("fetch", vi.fn(async () => modelsResponse([chatEntry, systemoneEntry("kev-4b")])));
+    const models = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" })(fakeContext({ publish }));
+    expect(models.map((m) => (m as { id: string }).id)).toEqual(["chat-1"]);
+    const arg = publish.mock.calls[0][0] as { persist: { models: { id: string }[] } };
+    expect(arg.persist.models.map((m) => m.id)).toEqual(["chat-1"]);
+  });
+
+  test("offline restore keeps stored classifiers only when classifiers are enabled, restamping chat and the classifier baseUrl", async () => {
+    const classifier = {
+      type: "classifier",
+      id: "kev-4b",
+      name: "kev-4b",
+      api: "typesafe-system-one",
+      provider: "lunaroute",
+      baseUrl: "http://old/v1",
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+    };
+    const chatStored = {
+      id: "chat-1",
+      name: "chat-1",
+      api: "openai-completions",
+      provider: "lunaroute",
+      baseUrl: "http://gw/v1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+      maxTokens: 1024,
+    };
+    const stored = { models: [classifier, chatStored], checkedAt: 1 } as unknown as RefreshModelsContext["stored"];
+    vi.stubGlobal("fetch", vi.fn());
+
+    const on = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" }, { classifiers: true })(
+      fakeContext({ allowNetwork: false, stored }),
+    );
+    expect(on.map((m) => (m as { id: string }).id)).toEqual(["kev-4b", "chat-1"]);
+    expect((on[0] as { api: string }).api).toBe("typesafe-system-one");
+    expect((on[0] as { baseUrl: string }).baseUrl).toBe("http://gw/v1");
+    expect((on[1] as { api: string }).api).toBe("openai-responses");
+
+    const off = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" })(
+      fakeContext({ allowNetwork: false, stored }),
+    );
+    expect(off.map((m) => (m as { id: string }).id)).toEqual(["chat-1"]);
+  });
+});

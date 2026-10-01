@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Api, Credential, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai";
-import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 export const LUNAROUTE_ENV_AGENT_DIR = "PI_CODING_AGENT_DIR";
 
@@ -66,14 +66,6 @@ export function resolveApi(env: NodeJS.ProcessEnv): WireApi {
     );
   }
   return "openai-completions";
-}
-
-/** Re-stamp the resolved wire api over stored models: the stamped entries
- * become the provider's model definitions, and applyExtension resolves
- * definition.api ahead of the provider config's api (see WireApi above), so a
- * value persisted by an earlier launch would otherwise outrank LUNAROUTE_API. */
-export function stampWireApi(models: readonly Model<Api>[], api: WireApi): Model<Api>[] {
-  return models.map((m) => ({ ...m, api }));
 }
 
 export function buildAttributionHeaders(version: string, sessionId: string): Record<string, string> {
@@ -156,6 +148,43 @@ export type InputLimits = {
 
 /** ProviderModelConfig widened with the (newer-pi) `inputLimits` field. */
 export type LunarouteModelConfig = ProviderModelConfig & { inputLimits?: InputLimits };
+
+/** The gateway capability tag for System One decision models. */
+export const SYSTEMONE_CAPABILITY = "systemone";
+/** pi's built-in System One classifier transport; LunaRoute's `/v1/systemone`
+ * speaks its exact wire protocol. */
+export const SYSTEMONE_CLASSIFIER_API = "typesafe-system-one";
+
+/** pi 0.99's `ProviderClassifierModelConfig`, redeclared structurally: this
+ * repo compiles against the 0.84.x floor, whose pi types have no
+ * `type: "classifier"` discriminant, so it cannot import that type. */
+export type LunarouteClassifierConfig = {
+  type: "classifier";
+  id: string;
+  name: string;
+  api: string;
+  baseUrl?: string;
+  provider?: string;
+  input: ("text" | "image")[];
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  contextWindow: number;
+};
+
+/** pi 0.99's `ProviderClassifier`, redeclared structurally. */
+export type LunarouteClassifierImpl = {
+  classify: (model: unknown, context: unknown, options?: unknown) => Promise<unknown>;
+};
+
+/** A model definition the extension registers: a chat model or a classifier. */
+export type LunarouteProviderModelConfig = LunarouteModelConfig | LunarouteClassifierConfig;
+
+/** `ProviderConfig` widened with the 0.99-only classifier fields, so index.ts
+ * can build the config with full type checking and cast once at the
+ * registerProvider boundary. */
+export type LunarouteProviderConfig = Omit<ProviderConfig, "models"> & {
+  models?: LunarouteProviderModelConfig[];
+  classifiers?: Record<string, LunarouteClassifierImpl>;
+};
 
 /** Fallback per-image resize profile for vision models. pi's own default is
  * 2000x2000 / 4.5 MiB base64, so this only ever shrinks (kata 2aam). */
@@ -269,6 +298,29 @@ export function mapCatalogEntry(entry: GatewayModelObject): CatalogMappingResult
   return { ok: true, model };
 }
 
+/** Map a System One decision-model entry to a pi classifier definition.
+ * Undefined when the entry is not a decision model or lacks a usable context
+ * window. Only called when the host supports classifier models. */
+export function mapClassifierEntry(entry: GatewayModelObject): LunarouteClassifierConfig | undefined {
+  if (entry.capabilities?.[SYSTEMONE_CAPABILITY] !== true) return undefined;
+  if (!entry.context_window || entry.context_window <= 0) return undefined;
+  return {
+    type: "classifier",
+    id: entry.id,
+    name: entry.display_name ?? entry.id,
+    api: SYSTEMONE_CLASSIFIER_API,
+    // Always text-only: pi's ClassifierContext has no image channel and
+    // `instructions` is typed string, so a vision capability is unreachable.
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: entry.context_window,
+  };
+}
+
+export function isClassifierConfig(model: unknown): model is LunarouteClassifierConfig {
+  return (model as { type?: unknown }).type === "classifier";
+}
+
 export function missingPiBlockWarning(id: string): string {
   return `LunaRoute model "${id}" supports reasoning but the catalog did not include Pi compatibility metadata. Skipping it. (Requires LunaRoute server issue vkd3.)`;
 }
@@ -301,6 +353,39 @@ export function toStoredModel(
   };
 }
 
+/** Persisted classifier shape. Unlike toStoredModel it KEEPS `api`: a
+ * classifier definition without its api makes provider-composer throw inside
+ * publish.update, failing the entire refresh (chat included), so the chat
+ * path's "drop model.api" precedent must not be copied here. */
+export function toStoredClassifier(model: LunarouteClassifierConfig, baseUrl: string): LunarouteClassifierConfig {
+  return { ...model, provider: LUNAROUTE_PROVIDER, baseUrl: model.baseUrl ?? baseUrl };
+}
+
+/** A ProviderClassifier that loads pi's built-in System One transport on the
+ * first classify call. The specifier is typed `string` on purpose: a literal
+ * would make tsc/vitest resolve a module the 0.84.x floor does not ship.
+ * Reachable only when supportsClassifierModels() gated the host on. */
+export function createSystemOneClassifier(
+  load: () => Promise<{ typesafeSystemOneApi: () => LunarouteClassifierImpl }>,
+): LunarouteClassifierImpl {
+  let impl: LunarouteClassifierImpl | undefined;
+  return {
+    async classify(model, context, options) {
+      impl ??= (await load()).typesafeSystemOneApi();
+      return impl.classify(model, context, options);
+    },
+  };
+}
+
+/** True when a pi host exposes classifier models (`type: "classifier"` and
+ * `ProviderConfig.classifiers`), added in 0.99.0. Pre-release and malformed
+ * versions gate off conservatively. */
+export function supportsClassifierModels(version: string): boolean {
+  const match = /^\s*(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?/.exec(version);
+  if (!match || match[4] !== undefined) return false;
+  return Number(match[1]) > 0 || Number(match[2]) >= 99;
+}
+
 export function agentDirFromEnv(env: NodeJS.ProcessEnv): string {
   const value = env[LUNAROUTE_ENV_AGENT_DIR];
   return typeof value === "string" && value ? value : join(homedir(), ".pi", "agent");
@@ -319,21 +404,41 @@ export function agentDirFromEnv(env: NodeJS.ProcessEnv): string {
  * ponytail: reads Pi's models-store.json layout directly; if Pi ever changes
  * that file's schema this silently degrades to [] and the old race returns.
  */
-export function readPersistedModels(env: NodeJS.ProcessEnv): Model<Api>[] {
+/** Rebuild persisted entries as model definitions. Chat entries get the
+ * resolved wire api re-stamped (a stale stored pin must not outrank
+ * LUNAROUTE_API); classifier entries keep their api but get the resolved
+ * routing URL re-stamped (a stored pin must not survive a LUNAROUTE_ROUTING_URL
+ * change), and are dropped entirely when the host cannot use them, so a
+ * models-store.json written by a >= 0.99 host cannot leak classifiers into a
+ * < 0.99 host's seed. */
+export function selectStoredModels(
+  models: readonly unknown[],
+  api: Api,
+  classifiers: boolean,
+  baseUrl: string,
+): LunarouteProviderModelConfig[] {
+  const out: LunarouteProviderModelConfig[] = [];
+  for (const model of models) {
+    if (typeof model !== "object" || model === null) continue;
+    const candidate = model as { id?: unknown; type?: unknown };
+    if (typeof candidate.id !== "string") continue;
+    if (candidate.type === "classifier") {
+      if (classifiers) out.push({ ...(model as LunarouteClassifierConfig), baseUrl });
+      continue;
+    }
+    if (candidate.type !== undefined && candidate.type !== "chat") continue;
+    out.push({ ...(model as Model<Api>), api });
+  }
+  return out;
+}
+
+export function readPersistedModels(env: NodeJS.ProcessEnv, classifiers = false): LunarouteProviderModelConfig[] {
   try {
     const raw = readFileSync(join(agentDirFromEnv(env), "models-store.json"), "utf8");
     const parsed = JSON.parse(raw) as Record<string, { models?: unknown }>;
     const models = parsed[LUNAROUTE_PROVIDER]?.models;
     if (!Array.isArray(models)) return [];
-    const api = resolveApi(env);
-    return stampWireApi(
-      models.filter(
-        (m): m is Model<Api> =>
-          typeof m === "object" && m !== null &&
-          typeof (m as Model<Api>).id === "string",
-      ),
-      api,
-    );
+    return selectStoredModels(models, resolveApi(env), classifiers, resolveRoutingUrl(env));
   } catch {
     return [];
   }
