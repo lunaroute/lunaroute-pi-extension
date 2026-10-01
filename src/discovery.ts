@@ -26,8 +26,10 @@ export type DiscoveryDeps = {
 
 /** Restored catalog from a prior session, as definitions. Stored chat entries
  * are Model<Api> objects (a structural superset); the resolved wire format is
- * stamped over the stored api. Stored classifier entries pass through
- * unchanged (their api IS the classifier api). */
+ * stamped over the stored api. Stored classifier entries keep their api (the
+ * classifier api) but get the resolved routing URL stamped over any stored
+ * baseUrl, so a persisted definition cannot outlive a LUNAROUTE_ROUTING_URL
+ * change. */
 function restore(
   stored: RefreshModelsContext["stored"],
   api: WireApi,
