@@ -32,8 +32,11 @@ function restore(
   stored: RefreshModelsContext["stored"],
   api: WireApi,
   classifiers: boolean,
+  baseUrl: string,
 ): ProviderModelConfig[] {
-  return stored ? (selectStoredModels(stored.models, api, classifiers) as unknown as ProviderModelConfig[]) : [];
+  return stored
+    ? (selectStoredModels(stored.models, api, classifiers, baseUrl) as unknown as ProviderModelConfig[])
+    : [];
 }
 
 export function createRefreshModels(
@@ -49,10 +52,10 @@ export function createRefreshModels(
     // Phase 1 (offline / restore): surface the persisted catalog so getModels()
     // is non-empty at startup — Pi's last-model restore and Desktop/RPC model
     // listings read getModels() synchronously, before any network refresh.
-    if (!context.allowNetwork) return restore(context.stored, api, classifiers);
+    if (!context.allowNetwork) return restore(context.stored, api, classifiers, baseUrl);
 
     const key = resolveCredentialKey(context.credential);
-    if (!key) return restore(context.stored, api, classifiers);
+    if (!key) return restore(context.stored, api, classifiers, baseUrl);
 
     let models: ProviderModelConfig[];
     try {
@@ -61,7 +64,7 @@ export function createRefreshModels(
         headers: { Authorization: `Bearer ${key}` },
       });
       if (!res.ok) {
-        models = restore(context.stored, api, classifiers);
+        models = restore(context.stored, api, classifiers, baseUrl);
       } else {
         const body = (await res.json()) as { data?: GatewayModelObject[] };
         const entries = body.data ?? [];
@@ -94,7 +97,7 @@ export function createRefreshModels(
         models = fetched;
       }
     } catch {
-      models = restore(context.stored, api, classifiers);
+      models = restore(context.stored, api, classifiers, baseUrl);
     }
     // Notify exactly once per authenticated network attempt, with the list we
     // return: fresh on success, the persisted catalog when the attempt failed

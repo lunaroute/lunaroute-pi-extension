@@ -629,10 +629,29 @@ describe("System One classifier models (kata g2d6)", () => {
 
     const on = readPersistedModels({ PI_CODING_AGENT_DIR: dir, LUNAROUTE_API: "responses" }, true);
     expect(on.map((m) => m.id)).toEqual(["kev-4b", "chat-1"]);
-    expect(on[0]).toMatchObject({ type: "classifier", api: SYSTEMONE_CLASSIFIER_API });
+    expect(on[0]).toMatchObject({ type: "classifier", api: SYSTEMONE_CLASSIFIER_API, baseUrl: DEFAULT_ROUTING_URL });
     expect(on[1].api).toBe("openai-responses");
 
     const off = readPersistedModels({ PI_CODING_AGENT_DIR: dir, LUNAROUTE_API: "responses" }, false);
     expect(off.map((m) => m.id)).toEqual(["chat-1"]);
+  });
+
+  test("re-stamps the resolved routing URL onto a restored classifier (a stale pin must not survive)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lr-store-"));
+    const classifier = {
+      type: "classifier",
+      id: "kev-4b",
+      name: "kev-4b",
+      api: SYSTEMONE_CLASSIFIER_API,
+      provider: "lunaroute",
+      baseUrl: "https://old.example/v1",
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+    };
+    writeFileSync(join(dir, "models-store.json"), JSON.stringify({ lunaroute: { models: [classifier], checkedAt: 1 } }));
+
+    const models = readPersistedModels({ PI_CODING_AGENT_DIR: dir, LUNAROUTE_ROUTING_URL: "http://new.example/v1" }, true);
+    expect(models[0]).toMatchObject({ type: "classifier", api: SYSTEMONE_CLASSIFIER_API, baseUrl: "http://new.example/v1" });
   });
 });

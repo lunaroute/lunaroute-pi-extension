@@ -864,6 +864,6 @@ describe("classifier model registration (kata g2d6)", () => {
 
     lunarouteExtension(pi, "0.99.1");
     const [, config] = registerProvider.mock.calls[0] as [string, Record<string, unknown>];
-    expect(config.models).toEqual([{ ...classifier }]);
+    expect(config.models).toEqual([{ ...classifier, baseUrl: "https://gw.lunaroute.com/v1" }]);
   });
 });

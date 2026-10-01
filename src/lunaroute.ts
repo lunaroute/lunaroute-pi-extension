@@ -406,14 +406,16 @@ export function agentDirFromEnv(env: NodeJS.ProcessEnv): string {
  */
 /** Rebuild persisted entries as model definitions. Chat entries get the
  * resolved wire api re-stamped (a stale stored pin must not outrank
- * LUNAROUTE_API); classifier entries pass through verbatim — their api IS the
- * classifier api — and are dropped entirely when the host cannot use them, so
- * a models-store.json written by a >= 0.99 host cannot leak classifiers into
- * a < 0.99 host's seed. */
+ * LUNAROUTE_API); classifier entries keep their api but get the resolved
+ * routing URL re-stamped (a stored pin must not survive a LUNAROUTE_ROUTING_URL
+ * change), and are dropped entirely when the host cannot use them, so a
+ * models-store.json written by a >= 0.99 host cannot leak classifiers into a
+ * < 0.99 host's seed. */
 export function selectStoredModels(
   models: readonly unknown[],
   api: Api,
   classifiers: boolean,
+  baseUrl: string,
 ): LunarouteProviderModelConfig[] {
   const out: LunarouteProviderModelConfig[] = [];
   for (const model of models) {
@@ -421,7 +423,7 @@ export function selectStoredModels(
     const candidate = model as { id?: unknown; type?: unknown };
     if (typeof candidate.id !== "string") continue;
     if (candidate.type === "classifier") {
-      if (classifiers) out.push(model as LunarouteClassifierConfig);
+      if (classifiers) out.push({ ...(model as LunarouteClassifierConfig), baseUrl });
       continue;
     }
     if (candidate.type !== undefined && candidate.type !== "chat") continue;
@@ -436,7 +438,7 @@ export function readPersistedModels(env: NodeJS.ProcessEnv, classifiers = false)
     const parsed = JSON.parse(raw) as Record<string, { models?: unknown }>;
     const models = parsed[LUNAROUTE_PROVIDER]?.models;
     if (!Array.isArray(models)) return [];
-    return selectStoredModels(models, resolveApi(env), classifiers);
+    return selectStoredModels(models, resolveApi(env), classifiers, resolveRoutingUrl(env));
   } catch {
     return [];
   }

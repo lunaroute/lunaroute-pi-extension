@@ -406,14 +406,14 @@ describe("lunaroute refreshModels classifier models (kata g2d6)", () => {
     expect(arg.persist.models.map((m) => m.id)).toEqual(["chat-1"]);
   });
 
-  test("offline restore keeps stored classifiers only when classifiers are enabled, restamping chat", async () => {
+  test("offline restore keeps stored classifiers only when classifiers are enabled, restamping chat and the classifier baseUrl", async () => {
     const classifier = {
       type: "classifier",
       id: "kev-4b",
       name: "kev-4b",
       api: "typesafe-system-one",
       provider: "lunaroute",
-      baseUrl: "http://gw/v1",
+      baseUrl: "http://old/v1",
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 8192,
@@ -438,6 +438,7 @@ describe("lunaroute refreshModels classifier models (kata g2d6)", () => {
     );
     expect(on.map((m) => (m as { id: string }).id)).toEqual(["kev-4b", "chat-1"]);
     expect((on[0] as { api: string }).api).toBe("typesafe-system-one");
+    expect((on[0] as { baseUrl: string }).baseUrl).toBe("http://gw/v1");
     expect((on[1] as { api: string }).api).toBe("openai-responses");
 
     const off = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" })(
