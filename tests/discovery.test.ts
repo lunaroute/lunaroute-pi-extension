@@ -149,7 +149,7 @@ describe("lunaroute refreshModels", () => {
     expect(arg.persist.models.map((m) => m.id)).toEqual(["chat-1", "glm-5.2-vision"]);
   });
 
-  test("excludes embedding and reranking models from the chat catalog, the persisted store, and onCatalogRefreshed (kata p4eh)", async () => {
+  test("excludes embedding, reranking, and transcription models from the chat catalog, the persisted store, and onCatalogRefreshed (kata p4eh, yc37)", async () => {
     const onCatalogRefreshed = vi.fn();
     const publish = vi.fn(async (_publication: unknown) => true);
     vi.stubGlobal(
@@ -159,6 +159,7 @@ describe("lunaroute refreshModels", () => {
           { id: "chat-1", display_name: "Chat 1", context_window: 8192, max_output_tokens: 1024, capabilities: { tools: true } },
           { id: "emb-qwen3", capabilities: { embeddings: true, rerank: false } },
           { id: "bge-rr-v2-m3", capabilities: { embeddings: false, rerank: true } },
+          { id: "whisper-large-v3", display_name: "Whisper Large v3", capabilities: { transcription: true } },
           {
             id: "glm-5.2-vision",
             context_window: 1048576,
@@ -173,7 +174,7 @@ describe("lunaroute refreshModels", () => {
       fakeContext({ publish }),
     );
     expect(models.map((m) => m.id)).toEqual(["chat-1", "glm-5.2-vision"]);
-    // Auto-select safety: models[0] must never be an embedding or reranking model.
+    // Auto-select safety: models[0] must never be an embedding, reranking, or transcription model.
     expect((onCatalogRefreshed.mock.calls[0][0] as { id: string }[]).map((m) => m.id)).toEqual([
       "chat-1",
       "glm-5.2-vision",
