@@ -414,16 +414,22 @@ describe("registerLunarouteSettingsCommand", () => {
 	function fakeCtx(overrides: Record<string, unknown> = {}) {
 		const notify = vi.fn();
 		const custom = vi.fn();
+		const select = vi.fn();
 		return {
 			ctx: {
 				hasUI: true,
 				mode: "tui",
-				modelRegistry: { getApiKeyForProvider: vi.fn(async () => "lr_key") },
-				ui: { notify, custom },
+				modelRegistry: {
+					getApiKeyForProvider: vi.fn(async () => "lr_key"),
+					refresh: vi.fn(async () => ({ aborted: false, errors: new Map() })),
+					getAvailable: vi.fn(() => []),
+				},
+				ui: { notify, custom, select },
 				...overrides,
 			},
 			notify,
 			custom,
+			select,
 		};
 	}
 
@@ -449,7 +455,7 @@ describe("registerLunarouteSettingsCommand", () => {
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/tmp/bjy9-agent/lunaroute.json"), "info");
 	});
 
-	test("TUI mode: renders the list; driving webTools on→off writes the file", async () => {
+	test("TUI mode: /lunaroute settings renders the list; driving webTools on→off writes the file", async () => {
 		const { pi, options } = commandPi();
 		const write = vi.fn();
 		registerLunarouteSettingsCommand(pi, {
@@ -473,7 +479,7 @@ describe("registerLunarouteSettingsCommand", () => {
 				component = factory({}, theme, {}, vi.fn()) as typeof component;
 			},
 		);
-		await call[1].handler("", ctx);
+		await call[1].handler("settings", ctx);
 		expect(custom).toHaveBeenCalled();
 		expect(component).toBeTruthy();
 		const lines = component!.render(80).join("\n");
@@ -485,6 +491,102 @@ describe("registerLunarouteSettingsCommand", () => {
 		component!.handleInput("\r");
 		await new Promise((r) => setTimeout(r, 0)); // applier runs void-async
 		expect(write).toHaveBeenCalledWith(ENV, { ...DEFAULT_SETTINGS, webTools: "off" });
+	});
+
+	test("bare command: offers Settings and Refresh models; Settings opens the list", async () => {
+		const { pi, options } = commandPi();
+		const { ctx, custom, select } = fakeCtx();
+		select.mockResolvedValue("Settings");
+		(custom as ReturnType<typeof vi.fn>).mockImplementation(async () => {});
+		await options.handler("", ctx);
+		expect(select).toHaveBeenCalledWith("LunaRoute", ["Settings", "Refresh models"]);
+		expect(custom).toHaveBeenCalled();
+		expect(ctx.modelRegistry.refresh).not.toHaveBeenCalled();
+	});
+
+	test("bare command: choosing Refresh models reloads the catalog", async () => {
+		const { options } = commandPi();
+		const { ctx, select, notify } = fakeCtx();
+		select.mockResolvedValue("Refresh models");
+		(ctx.modelRegistry.getAvailable as ReturnType<typeof vi.fn>).mockReturnValue([
+			{ provider: "lunaroute", id: "meta-muse-1" },
+		]);
+		await options.handler("", ctx);
+		expect(ctx.modelRegistry.refresh).toHaveBeenCalledTimes(1);
+		expect(notify).toHaveBeenCalledWith("LunaRoute models reloaded — 1 available", "info");
+	});
+
+	test("bare command: dismissing the menu does nothing", async () => {
+		const { options } = commandPi();
+		const { ctx, select, notify } = fakeCtx();
+		select.mockResolvedValue(undefined);
+		await options.handler("", ctx);
+		expect(ctx.modelRegistry.refresh).not.toHaveBeenCalled();
+		expect(notify).not.toHaveBeenCalled();
+	});
+
+	test("unknown arg: usage points at both subcommands", async () => {
+		const { options } = commandPi();
+		const { ctx, notify, custom } = fakeCtx();
+		await options.handler("bogus", ctx);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("models-refresh"), "info");
+		expect(notify.mock.calls[0][0]).toContain("settings");
+		expect(custom).not.toHaveBeenCalled();
+		expect(ctx.modelRegistry.refresh).not.toHaveBeenCalled();
+	});
+
+	test("models-refresh: reloads lunaroute over the network and reports the count", async () => {
+		const { options } = commandPi();
+		const { ctx, notify } = fakeCtx();
+		(ctx.modelRegistry.getAvailable as ReturnType<typeof vi.fn>).mockReturnValue([
+			{ provider: "lunaroute", id: "meta-muse-1" },
+			{ provider: "anthropic", id: "claude" },
+		]);
+		await options.handler("models-refresh", ctx);
+		expect(ctx.modelRegistry.refresh).toHaveBeenCalledWith({
+			providers: ["lunaroute"],
+			allowNetwork: true,
+			signal: expect.any(AbortSignal),
+		});
+		expect(notify).toHaveBeenCalledWith("LunaRoute models reloaded — 1 available", "info");
+	});
+
+	test("models-refresh: a provider error is reported as an error, with a login hint on 401", async () => {
+		const { options } = commandPi();
+		const { ctx, notify } = fakeCtx();
+		(ctx.modelRegistry.refresh as ReturnType<typeof vi.fn>).mockResolvedValue({
+			aborted: false,
+			errors: new Map([["lunaroute", new Error("HTTP 401")]]),
+		});
+		await options.handler("models-refresh", ctx);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("HTTP 401"), "error");
+		expect(notify.mock.calls[0][0]).toContain("/login lunaroute");
+		expect(notify.mock.calls[0][0]).not.toContain("reloaded");
+	});
+
+	test("models-refresh: a timed-out refresh is reported as an error", async () => {
+		const { options } = commandPi();
+		const { ctx, notify } = fakeCtx();
+		(ctx.modelRegistry.refresh as ReturnType<typeof vi.fn>).mockResolvedValue({ aborted: true, errors: new Map() });
+		await options.handler("models-refresh", ctx);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("timed out"), "error");
+	});
+
+	test("models-refresh: without a key, tells the user to log in and never refreshes", async () => {
+		const { options } = commandPi();
+		const { ctx, notify } = fakeCtx();
+		(ctx.modelRegistry.getApiKeyForProvider as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+		await options.handler("models-refresh", ctx);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/login lunaroute"), "info");
+		expect(ctx.modelRegistry.refresh).not.toHaveBeenCalled();
+	});
+
+	test("models-refresh works in RPC mode too (no TUI needed)", async () => {
+		const { options } = commandPi();
+		const { ctx, notify } = fakeCtx({ mode: "rpc" });
+		await options.handler("models-refresh", ctx);
+		expect(ctx.modelRegistry.refresh).toHaveBeenCalledTimes(1);
+		expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("lunaroute.json"), "info");
 	});
 });
 

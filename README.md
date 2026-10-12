@@ -11,7 +11,8 @@ hosted LunaRoute MCP server (image generation and more) is wired up for you too.
   automatically — context windows, token limits, reasoning, and vision
   capabilities all come through pre-mapped. Run `/model` and pick a
   `lunaroute/*` model. Re-fetched on every refresh, so new models appear as
-  soon as they ship.
+  soon as they ship — or run `/lunaroute models-refresh` to pull the catalog
+  without restarting Pi.
 - **First-class web search.** When no other extension provides web search,
   a real `web_search` Pi tool is registered, backed by the hosted LunaRoute
   MCP server — collapsed rows, expandable sources, parallel calls. A
@@ -193,7 +194,11 @@ raster images (OCR'd) become Markdown the model can work with.
 
 ## Settings
 
-Run `/lunaroute` in Pi to open the settings UI (interactive mode):
+Run `/lunaroute` in Pi for a menu — *Settings* (or `/lunaroute settings`)
+opens the settings UI below, *Refresh models* (or `/lunaroute models-refresh`)
+reloads the model catalog from LunaRoute without a restart. A refresh that
+fails (network down, rejected key, timeout) is reported as an error and the
+last known catalog stays in use. The settings UI, interactive mode only:
 
 - **MCP tools** — on/off. Off skips the hosted LunaRoute MCP registration
   (a server you configured yourself is always left alone).

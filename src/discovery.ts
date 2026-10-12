@@ -60,62 +60,70 @@ export function createRefreshModels(
     if (!key) return restore(context.stored, api, classifiers, baseUrl);
 
     let models: ProviderModelConfig[];
+    let failure: unknown;
     try {
       const res = await doFetch(`${baseUrl}/models`, {
         signal: context.signal,
         headers: { Authorization: `Bearer ${key}` },
       });
       if (!res.ok) {
-        models = restore(context.stored, api, classifiers, baseUrl);
-      } else {
-        const body = (await res.json()) as { data?: GatewayModelObject[] };
-        const entries = body.data ?? [];
-
-        const fetched: ProviderModelConfig[] = [];
-        for (const entry of entries) {
-          if (classifiers) {
-            const classifier = mapClassifierEntry(entry);
-            if (classifier) {
-              fetched.push(classifier as unknown as ProviderModelConfig);
-              continue;
-            }
-          }
-          const result = mapCatalogEntry(entry);
-          if (result.ok) fetched.push(result.model);
-        }
-        // Persist for next startup. The returned list is applied to the in-memory
-        // registry by the provider-composer wrapper; publish({persist}) writes the
-        // catalog to Pi's ModelsStore so context.stored is populated next launch.
-        // A store-write failure must not discard the fresh catalog — the in-memory
-        // list still updates via the wrapper, and the next refresh retries persist.
-        await context.publish({
-          persist: {
-            models: fetched.map((m) =>
-              isClassifierConfig(m) ? toStoredClassifier(m, baseUrl) : toStoredModel(m, baseUrl, api),
-            ) as unknown as Model<Api>[],
-            checkedAt: Date.now(),
-          },
-        }).catch(() => {});
-        models = fetched;
+        // Reported to the caller after the fallback is surfaced below. Pi
+        // collects a throwing refreshModels per provider and shows it (e.g.
+        // the /model picker's "could not refresh; showing cached models"),
+        // so a failed attempt must not look like a successful one.
+        throw new Error(`HTTP ${res.status}`);
       }
-    } catch {
+      const body = (await res.json()) as { data?: GatewayModelObject[] };
+      const entries = body.data ?? [];
+
+      const fetched: ProviderModelConfig[] = [];
+      for (const entry of entries) {
+        if (classifiers) {
+          const classifier = mapClassifierEntry(entry);
+          if (classifier) {
+            fetched.push(classifier as unknown as ProviderModelConfig);
+            continue;
+          }
+        }
+        const result = mapCatalogEntry(entry);
+        if (result.ok) fetched.push(result.model);
+      }
+      // Persist for next startup. The returned list is applied to the in-memory
+      // registry by the provider-composer wrapper; publish({persist}) writes the
+      // catalog to Pi's ModelsStore so context.stored is populated next launch.
+      // A store-write failure must not discard the fresh catalog — the in-memory
+      // list still updates via the wrapper, and the next refresh retries persist.
+      await context.publish({
+        persist: {
+          models: fetched.map((m) =>
+            isClassifierConfig(m) ? toStoredClassifier(m, baseUrl) : toStoredModel(m, baseUrl, api),
+          ) as unknown as Model<Api>[],
+          checkedAt: Date.now(),
+        },
+      }).catch(() => {});
+      models = fetched;
+    } catch (error) {
+      failure = error;
       models = restore(context.stored, api, classifiers, baseUrl);
     }
     // Notify exactly once per authenticated network attempt, with the list we
-    // return: fresh on success, the persisted catalog when the attempt failed
-    // (network error or non-2xx). Deliberately NOT fired on the offline /
+    // end up with: fresh on success, the persisted catalog when the attempt
+    // failed (network error or non-2xx). Deliberately NOT fired on the offline /
     // unauthenticated paths above: pi's registerProvider seeds the registry
     // with an offline refresh at extension-load time, before session_start
     // reports the session's model — auto-picking from that window would
     // overwrite a user's saved default (kata 9v71). Invoked outside the
-    // try/catch and guarded so a throwing callback neither double-fires (a
-    // throw inside the old try would have rerouted to the catch path and
-    // re-notified with the stale catalog) nor breaks the refresh it rides on.
+    // try/catch and guarded so a throwing callback neither double-fires nor
+    // breaks the refresh it rides on.
     try {
       onCatalogRefreshed?.(models);
     } catch {
       // The auto-pick side channel must never break the refresh.
     }
+    // A failed network attempt throws: the offline phase of the same refresh
+    // already published context.stored, so the catalog stays usable while the
+    // caller (and pi's error surface) learns the refresh did not happen.
+    if (failure !== undefined) throw failure instanceof Error ? failure : new Error(String(failure));
     return models;
   };
 }

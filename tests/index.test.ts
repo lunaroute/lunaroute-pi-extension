@@ -549,7 +549,7 @@ describe("model persistence and auto-select", () => {
     vi.stubEnv("LUNAROUTE_ROUTING_URL", "http://gw/v1");
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
     lunarouteExtension(pi);
-    await refreshModelsOf(registerProvider)(fakeRefreshContext());
+    await expect(refreshModelsOf(registerProvider)(fakeRefreshContext())).rejects.toThrow("offline");
     expect(setModel).not.toHaveBeenCalled();
   });
 
@@ -571,7 +571,9 @@ describe("model persistence and auto-select", () => {
       contextWindow: 8192,
       maxTokens: 1024,
     };
-    await refreshModelsOf(registerProvider)(fakeRefreshContext({ stored: { models: [stored], checkedAt: 1 } }));
+    await expect(
+      refreshModelsOf(registerProvider)(fakeRefreshContext({ stored: { models: [stored], checkedAt: 1 } })),
+    ).rejects.toThrow("offline");
     expect(setModel).toHaveBeenCalledTimes(1);
     expect(setModel.mock.calls[0][0]).toMatchObject({
       id: "cached-1",
