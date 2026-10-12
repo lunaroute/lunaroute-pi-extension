@@ -1,4 +1,5 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
 import { LUNAROUTE_PROVIDER } from "./lunaroute.js";
@@ -220,52 +221,118 @@ async function applyWebTools(
 	}
 }
 
-/** Register the `/lunaroute` settings command. */
+/** Register the `/lunaroute` command: bare (menu), `settings`, `models-refresh`. */
 export function registerLunarouteSettingsCommand(pi: ExtensionAPI, deps: SettingsCommandDeps): void {
 	pi.registerCommand("lunaroute", {
-		description: "LunaRoute settings: MCP tools, web search, search provider",
-		handler: async (_args, ctx) => {
+		description: "LunaRoute settings and model catalog refresh",
+		handler: async (args, ctx) => {
+			const sub = args.trim();
+			if (sub === "models-refresh") {
+				await refreshModelsCommand(ctx);
+				return;
+			}
+			if (sub === "settings") {
+				await openSettingsCommand(pi, deps, ctx);
+				return;
+			}
+			if (sub) {
+				ctx.ui.notify(`Unknown option "${sub}" — use /lunaroute settings or /lunaroute models-refresh`, "info");
+				return;
+			}
 			if (!ctx.hasUI) return; // print/json modes: nothing to render
 			if (ctx.mode !== "tui") {
-				// RPC mode: ctx.ui.custom() is unavailable — point at the file.
+				// The menu and the settings TUI both need a dialog-capable terminal.
 				ctx.ui.notify(`Run /lunaroute in interactive mode, or edit ${settingsPath(deps.env)}`, "info");
 				return;
 			}
-			const settings = (deps.read ?? readSettings)(deps.env);
-			const key = await ctx.modelRegistry.getApiKeyForProvider(LUNAROUTE_PROVIDER).catch(() => undefined);
-			const getApiKey = () => ctx.modelRegistry.getApiKeyForProvider(LUNAROUTE_PROVIDER).catch(() => undefined);
-			const applier = createSettingChangeApplier(pi, deps, ctx.ui, getApiKey, settings);
-
-			await ctx.ui.custom((_tui, theme, _kb, done) => {
-				const container = new Container();
-				container.addChild(new Text(theme.fg("accent", theme.bold("LunaRoute")), 1, 1));
-				container.addChild(
-					new Text(
-						key
-							? theme.fg("success", "Logged in ✓")
-							: theme.fg("dim", "Not logged in — run /login lunaroute"),
-						1,
-						0,
-					),
-				);
-				const list = new SettingsList(
-					buildSettingsItems(settings),
-					5,
-					getSettingsListTheme(),
-					(id, newValue) => {
-						list.updateValue(id, newValue);
-						void applier(id, newValue);
-					},
-					() => done(undefined),
-				);
-				container.addChild(list);
-				return {
-					render: (width: number) => container.render(width),
-					invalidate: () => container.invalidate(),
-					handleInput: (data: string) => list.handleInput?.(data),
-				};
-			});
+			const choice = await ctx.ui.select("LunaRoute", ["Settings", "Refresh models"]);
+			if (choice === "Settings") await openSettingsCommand(pi, deps, ctx);
+			else if (choice === "Refresh models") await refreshModelsCommand(ctx);
 		},
+	});
+}
+
+/** Reload the model catalog now and report the outcome (kata a2jm). discovery
+ * throws after restoring the stored catalog on a failed fetch, so pi records
+ * the attempt as a provider error — success is only reported when it landed. */
+async function refreshModelsCommand(ctx: ExtensionCommandContext): Promise<void> {
+	const key = await ctx.modelRegistry.getApiKeyForProvider(LUNAROUTE_PROVIDER).catch(() => undefined);
+	if (!key) {
+		ctx.ui.notify("Not logged in — run /login lunaroute to refresh models.", "info");
+		return;
+	}
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 15_000);
+	let result: ModelsRefreshResult;
+	try {
+		result = await ctx.modelRegistry.refresh({
+			providers: [LUNAROUTE_PROVIDER],
+			allowNetwork: true,
+			signal: controller.signal,
+		});
+	} catch (error) {
+		const detail = controller.signal.aborted ? "timed out" : error instanceof Error ? error.message : String(error);
+		ctx.ui.notify(`LunaRoute model refresh failed: ${detail}`, "error");
+		return;
+	} finally {
+		clearTimeout(timeout);
+	}
+	if (result.aborted) {
+		ctx.ui.notify("LunaRoute model refresh timed out — still showing the last known catalog.", "error");
+		return;
+	}
+	const error = result.errors.get(LUNAROUTE_PROVIDER);
+	if (error) {
+		const detail = error.message || String(error);
+		const hint = detail.includes("401") ? " — run /login lunaroute" : "";
+		ctx.ui.notify(`LunaRoute model refresh failed: ${detail}${hint}`, "error");
+		return;
+	}
+	const count = ctx.modelRegistry.getAvailable().filter((m) => m.provider === LUNAROUTE_PROVIDER).length;
+	ctx.ui.notify(`LunaRoute models reloaded — ${count} available`, "info");
+}
+
+/** The settings-list TUI (kata bjy9): `/lunaroute settings` and the menu. */
+async function openSettingsCommand(pi: ExtensionAPI, deps: SettingsCommandDeps, ctx: ExtensionCommandContext): Promise<void> {
+	if (!ctx.hasUI) return; // print/json modes: nothing to render
+	if (ctx.mode !== "tui") {
+		// RPC mode: ctx.ui.custom() is unavailable — point at the file.
+		ctx.ui.notify(`Run /lunaroute in interactive mode, or edit ${settingsPath(deps.env)}`, "info");
+		return;
+	}
+	const settings = (deps.read ?? readSettings)(deps.env);
+	const key = await ctx.modelRegistry.getApiKeyForProvider(LUNAROUTE_PROVIDER).catch(() => undefined);
+	const getApiKey = () => ctx.modelRegistry.getApiKeyForProvider(LUNAROUTE_PROVIDER).catch(() => undefined);
+	const applier = createSettingChangeApplier(pi, deps, ctx.ui, getApiKey, settings);
+
+	await ctx.ui.custom((_tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new Text(theme.fg("accent", theme.bold("LunaRoute")), 1, 1));
+		container.addChild(
+			new Text(
+				key
+					? theme.fg("success", "Logged in ✓")
+					: theme.fg("dim", "Not logged in — run /login lunaroute"),
+				1,
+				0,
+			),
+		);
+		const list = new SettingsList(
+			buildSettingsItems(settings),
+			5,
+			getSettingsListTheme(),
+			(id, newValue) => {
+				list.updateValue(id, newValue);
+				void applier(id, newValue);
+			},
+			() => done(undefined),
+		);
+		container.addChild(list);
+		return {
+			render: (width: number) => container.render(width),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => list.handleInput?.(data),
+		};
 	});
 }
 

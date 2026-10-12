@@ -82,22 +82,23 @@ describe("lunaroute refreshModels", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  test("returns [] on network error without throwing", async () => {
+  test("rejects with the network error after reporting the failed attempt to onCatalogRefreshed", async () => {
+    const onCatalogRefreshed = vi.fn();
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
-    const models = await createRefreshModels({})(fakeContext());
-    expect(models).toEqual([]);
+    const refresh = createRefreshModels({}, { onCatalogRefreshed });
+    await expect(refresh(fakeContext())).rejects.toThrow("offline");
+    expect(onCatalogRefreshed).toHaveBeenCalledTimes(1);
+    expect(onCatalogRefreshed).toHaveBeenCalledWith([]);
   });
 
-  test("returns [] on 401 without throwing", async () => {
+  test("rejects with HTTP 401 on an auth failure", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 401 })));
-    const models = await createRefreshModels({})(fakeContext());
-    expect(models).toEqual([]);
+    await expect(createRefreshModels({})(fakeContext())).rejects.toThrow("HTTP 401");
   });
 
-  test("returns [] on 5xx without throwing", async () => {
+  test("rejects with HTTP 503 on a server error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 503 })));
-    const models = await createRefreshModels({})(fakeContext());
-    expect(models).toEqual([]);
+    await expect(createRefreshModels({})(fakeContext())).rejects.toThrow("HTTP 503");
   });
 
   test("skips reasoning models with missing or null Pi compatibility metadata", async () => {
@@ -279,22 +280,26 @@ describe("lunaroute refreshModels persist + restore", () => {
     expect(arg.persist.models[0]).toMatchObject({ id: "deepseek-4.1-flash-background", inputLimits });
   });
 
-  test("retains the persisted catalog when the network fetch throws", async () => {
+  test("hands the persisted catalog to onCatalogRefreshed, then rejects, when the network fetch throws", async () => {
+    const onCatalogRefreshed = vi.fn();
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
-    const models = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" })(
-      fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
-    );
-    expect(models.map((m) => m.id)).toEqual(["cached-1"]);
-    expect(models.map((m) => m.api)).toEqual(["openai-responses"]);
+    const refresh = createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" }, { onCatalogRefreshed });
+    await expect(
+      refresh(fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } })),
+    ).rejects.toThrow("offline");
+    expect((onCatalogRefreshed.mock.calls[0][0] as { id: string }[]).map((m) => m.id)).toEqual(["cached-1"]);
+    expect((onCatalogRefreshed.mock.calls[0][0] as { api: string }[]).map((m) => m.api)).toEqual(["openai-responses"]);
   });
 
-  test("retains the persisted catalog on a non-2xx response", async () => {
+  test("hands the persisted catalog to onCatalogRefreshed, then rejects, on a non-2xx response", async () => {
+    const onCatalogRefreshed = vi.fn();
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 401 })));
-    const models = await createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" })(
-      fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
-    );
-    expect(models.map((m) => m.id)).toEqual(["cached-1"]);
-    expect(models.map((m) => m.api)).toEqual(["openai-responses"]);
+    const refresh = createRefreshModels({ LUNAROUTE_ROUTING_URL: "http://gw/v1" }, { onCatalogRefreshed });
+    await expect(
+      refresh(fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } })),
+    ).rejects.toThrow("HTTP 401");
+    expect((onCatalogRefreshed.mock.calls[0][0] as { id: string }[]).map((m) => m.id)).toEqual(["cached-1"]);
+    expect((onCatalogRefreshed.mock.calls[0][0] as { api: string }[]).map((m) => m.api)).toEqual(["openai-responses"]);
   });
 
   test("restore honors the LUNAROUTE_API kill switch over the stored api (offline rollback)", async () => {
@@ -315,24 +320,26 @@ describe("lunaroute refreshModels persist + restore", () => {
     expect((onCatalogRefreshed.mock.calls[0][0] as { id: string }[]).map((m) => m.id)).toEqual(["x"]);
   });
 
-  test("invokes onCatalogRefreshed with the persisted catalog when the response is not ok", async () => {
+  test("invokes onCatalogRefreshed once with the persisted catalog when the response is not ok, then rejects", async () => {
     const onCatalogRefreshed = vi.fn();
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 503 })));
-    const models = await createRefreshModels({}, { onCatalogRefreshed })(
-      fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
-    );
-    expect(models.map((m) => m.id)).toEqual(["cached-1"]);
+    await expect(
+      createRefreshModels({}, { onCatalogRefreshed })(
+        fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
+      ),
+    ).rejects.toThrow("HTTP 503");
     expect(onCatalogRefreshed).toHaveBeenCalledTimes(1);
     expect((onCatalogRefreshed.mock.calls[0][0] as { id: string }[]).map((m) => m.id)).toEqual(["cached-1"]);
   });
 
-  test("invokes onCatalogRefreshed with the persisted catalog when the fetch throws", async () => {
+  test("invokes onCatalogRefreshed once with the persisted catalog when the fetch throws, then rejects", async () => {
     const onCatalogRefreshed = vi.fn();
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
-    const models = await createRefreshModels({}, { onCatalogRefreshed })(
-      fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
-    );
-    expect(models.map((m) => m.id)).toEqual(["cached-1"]);
+    await expect(
+      createRefreshModels({}, { onCatalogRefreshed })(
+        fakeContext({ stored: { models: [storedModel("cached-1")], checkedAt: 1 } }),
+      ),
+    ).rejects.toThrow("offline");
     expect(onCatalogRefreshed).toHaveBeenCalledTimes(1);
     expect((onCatalogRefreshed.mock.calls[0][0] as { id: string }[]).map((m) => m.id)).toEqual(["cached-1"]);
   });
