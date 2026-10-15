@@ -84,7 +84,7 @@ and no cache entry is shared across identities.
 {
   "plan":   { "id": "pro", "name": "Pro", "interactiveLanes": 4, "backgroundLanes": 0 },
   "period": { "start": "2026-10-01T00:00:00Z", "end": "2026-10-31T00:00:00Z" },
-  "totals": { "requests": 812, "queuedMs": 482000, "rejected": 3, "rejectQueuedMs": 142000 },
+  "totals": { "requests": 812, "queuedMs": 482000, "requestMs": 1900000, "rejected": 3, "rejectQueuedMs": 142000 },
   "status": "ok" | "elevated" | "saturated" | "unknown",
   "suggestedAction": {
     "kind": "none" | "add_lanes" | "upgrade_plan",
@@ -94,8 +94,11 @@ and no cache entry is shared across identities.
 }
 ```
 
-- **The server owns thresholds and wording.** `status` is computed from
-  server-side plan limits; `suggestedAction` (including `message`) is
+- **The server owns thresholds and wording.** `status` is computed
+  server-side from the `totals` above (`queuedMs / requestMs` — both map to
+  `usage_events.queue_wait_us` and `usage_events.latency_us` — plus the
+  rejection count) together with the plan's lane limits; `suggestedAction`
+  (including `message`) is
   server-authored, so plan tiers and copy can change without an extension
   release. The extension uses `suggestedAction.message` when present and
   otherwise falls back to a built-in per-`status` string, then renders
@@ -129,9 +132,11 @@ and no cache entry is shared across identities.
   At `session_start` (already exists), when enabled and logged in, call
   `get_usage` once via the extension's MCP client. If `status` is `elevated`
   or `saturated`, `ui.notify` the server-authored message/action. `ok`/`unknown`
-  stay silent. A failed call is silent. Notify-at-most-once is enforced by a
-  module-level guard for the process (the `adapterNoticeShown` pattern), so a
-  reload/resume that re-fires `session_start` does not re-notify.
+  stay silent. A failed call is silent. The notice is at most once **per
+  process**, not per session: a module-level guard (the `adapterNoticeShown`
+  pattern) means a reload/resume that re-fires `session_start` — or a second
+  session in the same process — does not re-notify. Deliberately conservative;
+  if per-session is later wanted, key the guard on the host's session id.
 - Do **not** warn per request. Per-request headers feed only the command
   output.
 
