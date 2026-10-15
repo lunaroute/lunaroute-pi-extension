@@ -129,14 +129,15 @@ and no cache entry is shared across identities.
   absent (that is another provider). Collect session counters: count, total,
   max, and last queue ms. Malformed values are ignored (never throw).
 - **Proactive message source is the aggregate tool, not the raw header.**
-  At `session_start` (already exists), when enabled and logged in, call
-  `get_usage` once via the extension's MCP client. If `status` is `elevated`
-  or `saturated`, `ui.notify` the server-authored message/action. `ok`/`unknown`
-  stay silent. A failed call is silent. The notice is at most once **per
-  process**, not per session: a module-level guard (the `adapterNoticeShown`
-  pattern) means a reload/resume that re-fires `session_start` — or a second
-  session in the same process — does not re-notify. Deliberately conservative;
-  if per-session is later wanted, key the guard on the host's session id.
+  At `session_start` (already exists), when enabled and logged in, run the check
+  at most once **per process**: a module-level guard (the `adapterNoticeShown`
+  pattern) is set before the call and wraps the whole check, so a reload/resume
+  that re-fires `session_start` — or a second session in the same process —
+  neither re-calls nor re-notifies. The check calls `get_usage` via the
+  extension's MCP client. If `status` is `elevated` or `saturated`, `ui.notify`
+  the server-authored message/action. `ok`/`unknown` stay silent. A failed call
+  is silent. Deliberately conservative; if per-session cadence is later wanted,
+  key the guard on the host's session id.
 - Do **not** warn per request. Per-request headers feed only the command
   output.
 
@@ -192,9 +193,11 @@ server version that provides the data.
 ## Open items
 
 - Thresholds and copy are server-owned and tunable without an extension
-  release. Baseline contract the server ships with (may be retuned later):
-  `elevated` when period queued time exceeds ~10% of request time or any
-  request was parked-and-rejected; `saturated` at ~25% or repeated rejections;
+  release. The binding contract is only that `status` is server-computed,
+  stable, and one of the four values. Illustrative starting points (not
+  normative — the server team owns exact boundaries and zero/boundary
+  handling): `elevated` around queued time >10% of request time or any
+  parked-and-rejected request; `saturated` around >25% or repeated rejections;
   `ok` otherwise; `unknown` when plan limits are unavailable. `suggestedAction`
   copy is authored server-side and returned in `message`.
 - Confirm at runtime that Pi suppresses `after_provider_response` on non-2xx
