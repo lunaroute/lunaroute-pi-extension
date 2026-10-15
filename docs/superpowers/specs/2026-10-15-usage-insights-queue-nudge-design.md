@@ -16,7 +16,7 @@ and nudge them toward adding lanes or upgrading when they are getting parked.
 ## Non-goals (v1)
 
 - No push channel / websocket / server-initiated notification. Checks are on
-  demand plus once per session.
+  demand plus at most once per process.
 - No nudge/threshold logic in the extension. The server owns what "a lot of
   queued time" means and the upgrade copy.
 - No new bespoke REST route in the extension. The aggregate read reuses the
