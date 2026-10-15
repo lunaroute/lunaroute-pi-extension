@@ -76,7 +76,9 @@ is minimal and the aggregate tool already captures rejections).
 ### B. Server: aggregate MCP tool `get_usage` (lunaroute-saas)
 
 One read-only tool on the hosted MCP server, self-scoped to the calling key's
-user/org. Reuses the existing usage query. Cached server-side (~60 s), cheap.
+user/org. Reuses the existing usage query. Cached server-side (~60 s), keyed by the
+authenticated `(org_id, user_id)` only — request parameters never key the cache,
+and no cache entry is shared across identities.
 
 ```json
 {
@@ -86,18 +88,24 @@ user/org. Reuses the existing usage query. Cached server-side (~60 s), cheap.
   "status": "ok" | "elevated" | "saturated" | "unknown",
   "suggestedAction": {
     "kind": "none" | "add_lanes" | "upgrade_plan",
-    "url": "https://app.lunaroute.com/settings/billing"
+    "url": "https://app.lunaroute.com/settings/billing",
+    "message": "You were parked 8m this month — adding a lane raises your limit."
   }
 }
 ```
 
 - **The server owns thresholds and wording.** `status` is computed from
-  server-side plan limits; `suggestedAction` is server-authored, so plan tiers
-  can change without an extension release. The extension only maps `status` to
-  presentation and `suggestedAction.url` to a link.
+  server-side plan limits; `suggestedAction` (including `message`) is
+  server-authored, so plan tiers and copy can change without an extension
+  release. The extension uses `suggestedAction.message` when present and
+  otherwise falls back to a built-in per-`status` string, then renders
+  `suggestedAction.url` as the link.
 - `unknown` is a valid outcome (plan limits unavailable) and must render as
   "no insight", never as a warning.
 - No field beyond the caller's own plan + own usage is returned.
+- The MCP master toggle (`settings.mcp`) governs model-facing MCP tool
+  registration only. Usage insights makes its own direct call and is governed
+  solely by `usageInsights`; MCP off does not disable insights.
 
 ### C. Extension: setting
 
@@ -120,8 +128,10 @@ user/org. Reuses the existing usage query. Cached server-side (~60 s), cheap.
 - **Proactive message source is the aggregate tool, not the raw header.**
   At `session_start` (already exists), when enabled and logged in, call
   `get_usage` once via the extension's MCP client. If `status` is `elevated`
-  or `saturated`, `ui.notify` the server-authored message/action once per
-  session. `ok`/`unknown` stay silent. A failed call is silent.
+  or `saturated`, `ui.notify` the server-authored message/action. `ok`/`unknown`
+  stay silent. A failed call is silent. Notify-at-most-once is enforced by a
+  module-level guard for the process (the `adapterNoticeShown` pattern), so a
+  reload/resume that re-fires `session_start` does not re-notify.
 - Do **not** warn per request. Per-request headers feed only the command
   output.
 
@@ -145,7 +155,9 @@ user/org. Reuses the existing usage query. Cached server-side (~60 s), cheap.
   → ignore; MCP failure in command → fall back or notify; `session_start`
   check → silent.
 - Usage collection never blocks or fails a request.
-- Off really means off: no session-start call, no `/lunaroute usage` output.
+- Off suppresses the session-start call and all usage data retrieval.
+  `/lunaroute usage` still runs but prints only "Usage insights are off —
+  enable in /lunaroute settings." so the toggle is discoverable.
 
 ## Testing
 
@@ -174,7 +186,11 @@ server version that provides the data.
 
 ## Open items
 
-- Product decision: the concrete `ok` / `elevated` / `saturated` thresholds
-  and the upgrade copy (server-side).
+- Thresholds and copy are server-owned and tunable without an extension
+  release. Baseline contract the server ships with (may be retuned later):
+  `elevated` when period queued time exceeds ~10% of request time or any
+  request was parked-and-rejected; `saturated` at ~25% or repeated rejections;
+  `ok` otherwise; `unknown` when plan limits are unavailable. `suggestedAction`
+  copy is authored server-side and returned in `message`.
 - Confirm at runtime that Pi suppresses `after_provider_response` on non-2xx
   (the repo's 0.85.1 note says it does) — affects nothing in v1 by design.
