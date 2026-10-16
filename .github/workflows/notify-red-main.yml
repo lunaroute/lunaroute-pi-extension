@@ -1,0 +1,24 @@
+name: Notify red main
+on:
+  workflow_run:
+    workflows: ["check"]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  notify:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Open or update an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+        run: bash scripts/ci/notify-red-main.sh
