@@ -15,55 +15,19 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: "22"
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
           cache: npm
       - run: npm ci
       - run: npm run check
 
-      - name: Assert npm pack file list
-        run: |
-          set -euo pipefail
-          # The packed file list must be exactly these 13 files — no test files,
-          # no missing source files. Catches a `files`-allowlist regression or
-          # a dropped/added source file.
-          expected='LICENSE
-          README.md
-          package.json
-          src/convert-tools.ts
-          src/discovery.ts
-          src/image-tools.ts
-          src/index.ts
-          src/login.ts
-          src/lunaroute.ts
-          src/settings-ui.ts
-          src/settings.ts
-          src/usage.ts
-          src/web-tools.ts'
-
-          # `npm pack --dry-run` prints `npm notice <size> <path>`; the path is
-          # the last field. Filter to the file paths we care about (skip the
-          # version/name/tarball/integrity notices that also appear).
-          actual="$(npm pack --dry-run 2>&1 \
-            | awk '/^npm notice/ && NF>=4 { print $NF }' \
-            | grep -E '^(src/|LICENSE$|README\.md$|package\.json$)' \
-            | sort -u)"
-
-          echo "--- expected ---"; printf '%s\n' "$expected" | sort -u
-          echo "--- actual ---";   printf '%s\n' "$actual"
-
-          if ! diff -u <(printf '%s\n' "$expected" | sort -u) <(printf '%s\n' "$actual"); then
-            echo "ERROR: npm pack file list does not match the expected 12 files." >&2
-            echo "If a source file was added/removed, update the expected list AND package.json files." >&2
-            exit 1
-          fi
-
-          if printf '%s\n' "$actual" | grep -qE '^tests/'; then
-            echo "ERROR: a tests/ file leaked into the packed tarball — check package.json files." >&2
-            exit 1
-          fi
-
-          echo "OK: no tests leaked."
+      # The packed tarball must contain exactly every git-tracked src/**/*.ts
+      # plus LICENSE, README.md, package.json — and nothing under tests/.
+      # Derived from git, so a new source file passes with no workflow edit.
+      - run: node scripts/pack-assert.mjs
