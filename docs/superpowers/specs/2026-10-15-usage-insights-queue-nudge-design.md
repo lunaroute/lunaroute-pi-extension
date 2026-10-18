@@ -181,7 +181,7 @@ Extension (`vitest`):
   report rendering for each `status`, `suggestedAction`, off, logged-out, and
   MCP-failure fallback, with an injected fake MCP client.
 - `settings-ui.test.ts`: `usage` subcommand routing; "Usage insights" row.
-- `index.test.ts`: handler registered only when enabled; no session-start
+- `index.test.ts`: handler always registered and inert while disabled; no session-start
   notify when off or when status is `ok`/`unknown`.
 
 Server (separate plan in `lunaroute-saas`): headers present/absent, tool payload
@@ -201,11 +201,12 @@ server version that provides the data.
 
 - Thresholds and copy are server-owned and tunable without an extension
   release. The binding contract is only that `status` is server-computed,
-  stable, and one of the four values. Illustrative starting points (not
-  normative — the server team owns exact boundaries and zero/boundary
-  handling): `elevated` around queued time >10% of request time or any
-  parked-and-rejected request; `saturated` around >25% or repeated rejections;
-  `ok` otherwise; `unknown` when plan limits are unavailable. `suggestedAction`
+  stable, and one of the four values. **v1 defaults** (server-owned and tunable
+  without an extension release; changing them changes only the server's own
+  unit tests): `elevated` when queued time >= 10% of request time, or any
+  parked-and-rejected request; `saturated` when >= 25%, or 3+ rejections;
+  `ok` otherwise; `unknown` when plan limits are unavailable; `request_ms == 0`
+  with any queueing is `elevated` (no division). `suggestedAction`
   copy is authored server-side and returned in `message`.
 - Confirm at runtime that Pi suppresses `after_provider_response` on non-2xx
   (the repo's 0.85.1 note says it does) — affects nothing in v1 by design.

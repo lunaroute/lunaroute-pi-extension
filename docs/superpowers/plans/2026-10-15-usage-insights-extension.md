@@ -249,17 +249,25 @@ git commit -m "feat(usage): fetch and parse the get_usage MCP snapshot"
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-it("reports plan, period and queued totals", () => {
+it("reports plan, lanes, period and queued totals", () => {
   const text = formatUsageReport(VALID_SNAPSHOT, { requests: 2, totalMs: 120, maxMs: 100, lastMs: 20 });
   expect(text).toContain("Pro");
+  expect(text).toContain("4 lanes"); // plan.interactiveLanes
   expect(text).toContain("8m 2s"); // 482000 ms formatted
-  expect(text).toContain("this session: 2 requests, 120 ms queued");
+  expect(text).toContain("3 rejected"); // totals.rejected
+  expect(text).toContain("this session: 2 requests, 120 ms queued, avg 60 ms, max 100 ms");
 });
 
 it("falls back to session stats when the snapshot is missing", () => {
   const text = formatUsageReport(undefined, { requests: 2, totalMs: 120, maxMs: 100, lastMs: 20 });
   expect(text).toContain("usage unavailable");
-  expect(text).toContain("this session: 2 requests, 120 ms queued, max 100 ms");
+  expect(text).toContain("this session: 2 requests, 120 ms queued, avg 60 ms, max 100 ms");
+});
+
+it("fallback with zero measured requests omits the average without NaN", () => {
+  const text = formatUsageReport(undefined, { requests: 0, totalMs: 0, maxMs: 0, lastMs: 0 });
+  expect(text).not.toContain("NaN");
+  expect(text).toContain("no queued responses measured");
 });
 
 it("nudges only for elevated and saturated", () => {
@@ -276,7 +284,7 @@ Expected: FAIL — not exported.
 
 - [ ] **Step 3: Implement**
 
-A small `formatMs(ms)` helper (seconds/minutes). `formatUsageReport` includes the status line and `suggestedAction.url` when present. **The `undefined`-snapshot branch must still render the measured local stats** — request count, total queued, and max — never discarding them; it only adds "usage unavailable" for the plan/period part. Built-in nudge strings are generic ("LunaRoute is queueing your requests often — run /lunaroute usage for details."); the server `message` wins when present.
+A small `formatMs(ms)` helper (seconds/minutes). A snapshot report renders: plan name, **interactive lane count when present**, period, queued total, **rejection count and rejection queue time**, status, and `suggestedAction.url` when present. **The `undefined`-snapshot branch must still render the measured local stats** — request count, total queued, average (`totalMs / requests`), and max — never discarding them; it only adds "usage unavailable" for the plan/period part. With `requests === 0` it renders "no queued responses measured" and never divides (no `NaN`). Built-in nudge strings are generic ("LunaRoute is queueing your requests often — run /lunaroute usage for details."); the server `message` wins when present.
 
 - [ ] **Step 4: Run tests to verify they pass**
 

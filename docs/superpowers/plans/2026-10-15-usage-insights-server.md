@@ -80,7 +80,7 @@ fn unknown_when_lanes_are_unset() {
 fn zero_request_time_cannot_divide_by_zero() { /* request_ms=0, queued_ms>0 -> not a panic; Elevated via any-queue rule */ }
 ```
 
-Boundaries: at least 10% → `Elevated`; at least 25% → `Saturated`; `rejected >= 3` → `Saturated`; `rejected == 1..=2` → at least `Elevated`; lanes `None` → `Unknown`.
+Boundaries — **the v1 contract, mirrored from the spec**: >= 10% → `Elevated`; >= 25% → `Saturated`; `rejected >= 3` → `Saturated`; `rejected == 1..=2` → at least `Elevated`; `request_ms == 0` with `queued_ms > 0` → `Elevated`; lanes `None` → `Unknown`. These constants are the server team's to retune; if they do, only these tests change.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
