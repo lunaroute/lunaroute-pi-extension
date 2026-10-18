@@ -266,6 +266,10 @@ export default function lunarouteExtension(pi: ExtensionAPI, version: string = V
   pi.on("session_start", async (_event, ctx) => {
     currentModel = ctx.model;
     keyRejectedNotified = false;
+    // Session stats are per session, so reset them before any early return
+    // (a logged-out session must not keep the previous session's numbers).
+    usageStats = emptyStats();
+    setInsightsOn(usageInsightsEnabled(process.env, readSettings(process.env)));
     if (ctx.hasUI) latestUi = ctx.ui;
     const settings = readSettings(process.env);
     const key = await ctx.modelRegistry.getApiKeyForProvider(LUNAROUTE_PROVIDER);
@@ -277,11 +281,9 @@ export default function lunarouteExtension(pi: ExtensionAPI, version: string = V
     }
     if (!key) return; // not logged in — silent, no tool registration
 
-    // Usage insights: session stats are per session; the once-per-process
-    // guard is set only when the check actually runs, so a logged-out
-    // session above (or an off toggle) never consumes it.
-    usageStats = emptyStats();
-    setInsightsOn(usageInsightsEnabled(process.env, settings));
+    // Usage insights: the once-per-process guard is set only when the check
+    // actually runs, so an off toggle never consumes it. Session stats were
+    // already reset at the top of session_start.
     if (ctx.hasUI && isInsightsOn() && !usageCheckDone) {
       usageCheckDone = true;
       void runUsageInsightCheck(key);

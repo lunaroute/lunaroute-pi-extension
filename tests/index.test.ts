@@ -956,6 +956,17 @@ describe("usage insights wiring", () => {
 		expect(_getUsageStats()).toEqual({ requests: 2, totalMs: 120, maxMs: 100, lastMs: 20 });
 	});
 
+	test("a logged-out session_start resets the previous session stats", async () => {
+		vi.stubGlobal("fetch", usageFetch(OK_SNAPSHOT));
+		const { pi, handlers } = fakePi();
+		lunarouteExtension(pi);
+		await handlers.get("session_start")?.({}, keyCtx());
+		handlers.get("after_provider_response")?.({ status: 200, headers: { "x-lunaroute-queue-ms": "100" } }, keyCtx());
+		expect(_getUsageStats().requests).toBe(1);
+		await handlers.get("session_start")?.({}, fakeContext()); // logged out
+		expect(_getUsageStats()).toEqual({ requests: 0, totalMs: 0, maxMs: 0, lastMs: 0 });
+	});
+
 	test("ignores response events when usage insights are off", async () => {
 		writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ usageInsights: "off" }));
 		vi.stubGlobal("fetch", usageFetch(OK_SNAPSHOT));

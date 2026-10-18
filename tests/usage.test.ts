@@ -29,6 +29,10 @@ describe("parseQueueMs", () => {
 		expect(parseQueueMs({ "x-lunaroute-queue-ms": "999999999999999" })).toBeUndefined();
 	});
 
+	test("finds the header case-insensitively", () => {
+		expect(parseQueueMs({ "X-Lunaroute-Queue-Ms": "42" })).toBe(42);
+	});
+
 	test("accepts zero (admitted immediately)", () => {
 		expect(parseQueueMs({ "x-lunaroute-queue-ms": "0" })).toBe(0);
 	});

@@ -12,7 +12,9 @@ const MAX_QUEUE_MS = 60 * 60 * 1000;
 
 /** Integer milliseconds from `x-lunaroute-queue-ms`, or undefined. */
 export function parseQueueMs(headers: Record<string, string>): number | undefined {
-	const raw = headers["x-lunaroute-queue-ms"];
+	// Case-insensitive: pi normalizes Fetch Headers to a lowercase record, but a
+	// provider or host may hand us mixed-case keys.
+	const raw = Object.entries(headers ?? {}).find(([name]) => name.toLowerCase() === "x-lunaroute-queue-ms")?.[1];
 	if (typeof raw !== "string" || !/^\d+$/.test(raw)) return undefined;
 	const ms = Number(raw);
 	return ms <= MAX_QUEUE_MS ? ms : undefined;
