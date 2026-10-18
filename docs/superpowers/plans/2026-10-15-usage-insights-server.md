@@ -89,7 +89,10 @@ Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement the types and `classify_status`**
 
-Handle `request_ms == 0` by treating any `queued_ms > 0` as `Elevated` (no division). Use integer ratio math (`queued_ms * 10 >= request_ms`) to avoid floats.
+Handle `request_ms == 0` by treating any `queued_ms > 0` as `Elevated` (no division). Do the threshold comparison in `i128` so a large aggregate can never overflow:
+`(queued_ms as i128) * 10 >= request_ms as i128` (and `* 4` for the 25%
+boundary). No floats, no saturating casts — `i128` holds the full `i64` range
+squared safely.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -131,14 +134,14 @@ SELECT
   COUNT(*),
   COALESCE(SUM(queue_wait_us), 0),
   COALESCE(SUM(latency_us), 0),
-  COUNT(*) FILTER (WHERE dispatch_timestamp IS NULL AND queue_wait_us IS NOT NULL),
+  COUNT(*) FILTER (WHERE dispatch_timestamp IS NULL),
   COALESCE(SUM(queue_wait_us) FILTER (WHERE dispatch_timestamp IS NULL), 0)
 FROM usage_events
 WHERE org_id = $1 AND user_id = $2
   AND request_timestamp >= $3 AND request_timestamp < $4;
 ```
 
-Convert µs → ms with integer division and saturating casts. `requests` counts all rows; `rejected` counts the gate-rejection rows (`dispatch_timestamp IS NULL`).
+Convert µs → ms with integer division and saturating casts. `requests` counts all rows; `rejected` counts **all** gate-rejection rows (`dispatch_timestamp IS NULL`) regardless of whether `queue_wait_us` is NULL — the two columns must not disagree on what a rejection is. `reject_queued_ms` sums only the non-NULL waits (NULLs drop out of `SUM`).
 
 - [ ] **Step 4: Run to verify it passes**
 

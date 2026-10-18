@@ -76,11 +76,15 @@ In `src/settings.ts`: add `usageInsights: Toggle` to `LunarouteSettings`, `usage
 /** Usage insights enabled? Same contract as convertToolsEnabled — the env
  * escape hatch only ever disables; the file is the user knob. */
 export function usageInsightsEnabled(env: NodeJS.ProcessEnv, settings: LunarouteSettings): boolean {
-  const v = env.LUNAROUTE_ENV_USAGE_INSIGHTS;
+  const v = env[LUNAROUTE_ENV_USAGE_INSIGHTS];
   if (v === "off" || v === "0" || v === "false") return false;
   return settings.usageInsights === "on";
 }
 ```
+
+(`env[LUNAROUTE_ENV_USAGE_INSIGHTS]` — bracket access, because the constant's
+*value* is `"LUNAROUTE_USAGE_INSIGHTS"`; dot access would read a property
+literally named `LUNAROUTE_ENV_USAGE_INSIGHTS`.)
 
 Add `export const LUNAROUTE_ENV_USAGE_INSIGHTS = "LUNAROUTE_USAGE_INSIGHTS";` to `src/lunaroute.ts` (it lives there so `settings.ts` can import it without a cycle, mirroring the other tool env vars).
 
@@ -373,7 +377,12 @@ Expected: FAIL.
 { id: "usageInsights", label: "Usage insights", description: "Queue/usage messages and /lunaroute usage", currentValue: settings.usageInsights, values: ["on", "off"] },
 ```
 
-`index.ts`: add a module-level `usageCheckDone = false` and a `let queueStats = emptyStats()`; in `session_start`, when `ctx.hasUI` and `usageInsightsEnabled(readSettings(process.env))`, if `!usageCheckDone` set it `true` and run the check (build the client from the session key, `fetchUsage`, `nudgeMessage`, `ctx.ui.notify` on a non-undefined message; swallow all errors). Register
+`index.ts`: add a module-level `usageCheckDone = false` (process-scoped, per
+spec) and a `let queueStats = emptyStats()` that is **reset to `emptyStats()`
+at the top of every `session_start`** — session stats are per session even
+though the proactive check is per process. In `session_start`, when `ctx.hasUI`
+and `usageInsightsEnabled(readSettings(process.env))`, if `!usageCheckDone` set
+it `true` and run the check (build the client from the session key, `fetchUsage`, `nudgeMessage`, `ctx.ui.notify` on a non-undefined message; swallow all errors). Register
 
 ```ts
 pi.on("after_provider_response", (event) => {
