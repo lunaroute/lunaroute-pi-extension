@@ -13,6 +13,7 @@ import {
   isClassifierConfig,
   readPersistedModels,
   resolveApi,
+  resolveMcpUrl,
   resolveRoutingUrl,
   supportsClassifierModels,
   toStoredModel,
@@ -24,10 +25,21 @@ import {
 } from "./lunaroute.js";
 import { lunarouteOAuth } from "./login.js";
 import { createRefreshModels } from "./discovery.js";
-import { registerWebTools } from "./web-tools.js";
+import { createLunarouteMcpClient, registerWebTools } from "./web-tools.js";
 import { registerImageTools } from "./image-tools.js";
 import { registerConvertTools } from "./convert-tools.js";
-import { mcpEnabled, readSettings } from "./settings.js";
+import { mcpEnabled, readSettings, usageInsightsEnabled } from "./settings.js";
+import {
+  _resetInsightsState,
+  emptyStats,
+  fetchUsage,
+  isInsightsOn,
+  nudgeMessage,
+  parseQueueMs,
+  recordQueueWait,
+  setInsightsOn,
+  type SessionQueueStats,
+} from "./usage.js";
 import { registerLunarouteSettingsCommand } from "./settings-ui.js";
 import { createRequire } from "node:module";
 
@@ -75,6 +87,23 @@ export function _resetAdapterNoticeState(): void {
 /** Test-only: force the adapter-presence answer. */
 export function _setAdapterInstalledOverride(fn: (() => boolean) | undefined): void {
   adapterInstalledOverride = fn;
+}
+
+// Process-wide usage-insight state. The check guard is per process by design
+// (see the spec): a reload/resume that re-fires session_start must not re-notify.
+let usageCheckDone = false;
+let usageStats = emptyStats();
+
+/** Test-only: reset the usage state between extension loads. */
+export function _resetUsageState(): void {
+  usageCheckDone = false;
+  usageStats = emptyStats();
+  _resetInsightsState();
+}
+
+/** Test-only: the session's accumulated queue stats. */
+export function _getUsageStats(): SessionQueueStats {
+  return usageStats;
 }
 
 /** The built-in transport for a wire format, resolved from the host's
@@ -125,7 +154,32 @@ export default function lunarouteExtension(pi: ExtensionAPI, version: string = V
     }
   };
 
-  registerLunarouteSettingsCommand(pi, mcpDeps);
+  registerLunarouteSettingsCommand(pi, mcpDeps, () => usageStats);
+
+  // Once-per-process usage check (spec §D): the server-owned snapshot drives
+  // the nudge. Best-effort and bounded — session_start must never hang on a
+  // stalled MCP call, and anything unexpected is silent.
+  const runUsageInsightCheck = async (key: string): Promise<void> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const client = createLunarouteMcpClient({
+        url: resolveMcpUrl(process.env),
+        headers: {
+          "LUNAROUTE-API-KEY": key,
+          ...buildAttributionHeaders(version, sessionId),
+        },
+        fetchImpl: fetch,
+      });
+      const snapshot = await fetchUsage(client, controller.signal);
+      const message = snapshot ? nudgeMessage(snapshot) : undefined;
+      if (message) notifyUser(message, "info");
+    } catch {
+      // Silent: insights are advisory.
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
 
   const providerConfig: LunarouteProviderConfig = {
     name: "LunaRoute",
@@ -212,6 +266,10 @@ export default function lunarouteExtension(pi: ExtensionAPI, version: string = V
   pi.on("session_start", async (_event, ctx) => {
     currentModel = ctx.model;
     keyRejectedNotified = false;
+    // Session stats are per session, so reset them before any early return
+    // (a logged-out session must not keep the previous session's numbers).
+    usageStats = emptyStats();
+    setInsightsOn(usageInsightsEnabled(process.env, readSettings(process.env)));
     if (ctx.hasUI) latestUi = ctx.ui;
     const settings = readSettings(process.env);
     const key = await ctx.modelRegistry.getApiKeyForProvider(LUNAROUTE_PROVIDER);
@@ -222,6 +280,15 @@ export default function lunarouteExtension(pi: ExtensionAPI, version: string = V
       ctx.ui.notify(firstRunHint(), "info");
     }
     if (!key) return; // not logged in — silent, no tool registration
+
+    // Usage insights: the once-per-process guard is set only when the check
+    // actually runs, so an off toggle never consumes it. Session stats were
+    // already reset at the top of session_start.
+    if (ctx.hasUI && isInsightsOn() && !usageCheckDone) {
+      usageCheckDone = true;
+      void runUsageInsightCheck(key);
+    }
+
     maybeShowAdapterMigrationNotice(ctx.ui);
     if (mcpEnabled(settings)) {
       // Master gate (kata 4ws9): the mcp toggle governs every MCP-backed
@@ -233,6 +300,15 @@ export default function lunarouteExtension(pi: ExtensionAPI, version: string = V
       await registerImageTools(pi, { key, ...mcpDeps, settings: readSettings(process.env) });
       await registerConvertTools(pi, { key, ...mcpDeps, settings: readSettings(process.env) });
     }
+  });
+
+  // Per-response queue time (spec §D). Registered unconditionally so a
+  // settings toggle takes effect live; the header check runs first, so other
+  // providers cost one lookup and no file I/O.
+  pi.on("after_provider_response", (event) => {
+    const ms = parseQueueMs(event.headers);
+    if (ms === undefined || !isInsightsOn()) return;
+    usageStats = recordQueueWait(usageStats, ms);
   });
 
   pi.on("model_select", (event) => {

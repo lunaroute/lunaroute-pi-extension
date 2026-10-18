@@ -196,7 +196,8 @@ raster images (OCR'd) become Markdown the model can work with.
 
 Run `/lunaroute` in Pi for a menu — *Settings* (or `/lunaroute settings`)
 opens the settings UI below, *Refresh models* (or `/lunaroute models-refresh`)
-reloads the model catalog from LunaRoute without a restart. A refresh that
+reloads the model catalog from LunaRoute without a restart, and *Usage* (or
+`/lunaroute usage`) prints this period's usage. A refresh that
 fails (network down, rejected key, timeout) is reported as an error and the
 last known catalog stays in use. The settings UI, interactive mode only:
 
@@ -210,11 +211,24 @@ last known catalog stays in use. The settings UI, interactive mode only:
   `upload_image` immediately; on restores them without a restart.
 - **Convert tools** — on/off. Off removes `convert_document` immediately;
   on restores it without a restart (revalidating the server catalog).
+- **Usage insights** — on/off, **on by default**. When on, each LunaRoute
+  response's queue time is accumulated for the session, `/lunaroute usage`
+  reports it, and one advisory message is shown per Pi process when the
+  server reports heavy queueing. Off suppresses the checks and the data;
+  the command then only says insights are off. Independent of the *MCP tools*
+  master switch.
+
+`/lunaroute usage` shows the plan and lane count, the billing period, queued
+and rejected totals, and this session's own measured queueing. The server
+supplies the snapshot (plan limits, status, and upgrade wording); when it is
+unavailable the command falls back to the session's measurements. Requires a
+LunaRoute gateway that sends `x-lunaroute-queue-ms` and offers the `get_usage`
+MCP tool — older servers simply report nothing.
 
 Settings persist in `~/.pi/agent/lunaroute.json`:
 
 ```json
-{ "mcp": "on", "webTools": "on", "searchProvider": "server", "imageTools": "on", "convertTools": "on" }
+{ "mcp": "on", "webTools": "on", "searchProvider": "server", "imageTools": "on", "convertTools": "on", "usageInsights": "on" }
 ```
 
 Missing keys fall back to these defaults (which equal the pre-settings
@@ -238,6 +252,7 @@ for dev/staging via environment variables before starting Pi:
 | `LUNAROUTE_IMAGE_TOOLS` | *(unset)* | Set to `off`/`0`/`false` to disable the first-class image tools |
 | `LUNAROUTE_DOCS_DIR` | `<agentDir>/lunaroute-docs` | Where oversized converted documents are saved (kata zpzt) |
 | `LUNAROUTE_CONVERT_TOOLS` | *(unset)* | Set to `off`/`0`/`false` to disable the first-class convert_document tool |
+| `LUNAROUTE_USAGE_INSIGHTS` | *(unset)* | Set to `off`/`0`/`false` to disable usage insights (queue collection, `/lunaroute usage`, advisory message) |
 
 ## Troubleshooting
 

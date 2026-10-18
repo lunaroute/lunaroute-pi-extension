@@ -10,6 +10,7 @@ import {
   readSettings,
   resolveSearchProvider,
   settingsPath,
+  usageInsightsEnabled,
   webToolsEnabled,
   writeSettings,
   type SettingsIo,
@@ -47,6 +48,16 @@ describe("readSettings (tolerant reader)", () => {
     expect(readSettings(ENV, fakeIo({}))).toEqual(DEFAULT_SETTINGS);
   });
 
+  test("usageInsights defaults on (an absent key must not disable it)", () => {
+    expect(readSettings(ENV, fakeIo({})).usageInsights).toBe("on");
+  });
+
+  test("usageInsights parses off, and an invalid value falls back to on", () => {
+    const path = settingsPath(ENV);
+    expect(readSettings(ENV, fakeIo({ [path]: '{"usageInsights":"off"}' })).usageInsights).toBe("off");
+    expect(readSettings(ENV, fakeIo({ [path]: '{"usageInsights":"maybe"}' })).usageInsights).toBe("on");
+  });
+
   test("invalid JSON → defaults", () => {
     expect(readSettings(ENV, fakeIo({ [path]: "{not json" }))).toEqual(DEFAULT_SETTINGS);
   });
@@ -65,6 +76,7 @@ describe("readSettings (tolerant reader)", () => {
       imageTools: "on",
       convertTools: "on",
       providerRetries: 2,
+      usageInsights: "on",
     });
   });
 
@@ -77,6 +89,7 @@ describe("readSettings (tolerant reader)", () => {
       imageTools: "on",
       convertTools: "on",
       providerRetries: 2,
+      usageInsights: "on",
     });
   });
 
@@ -94,6 +107,7 @@ describe("readSettings (tolerant reader)", () => {
       imageTools: "off",
       convertTools: "off",
       providerRetries: 2,
+      usageInsights: "on",
     });
   });
 });
@@ -101,10 +115,10 @@ describe("readSettings (tolerant reader)", () => {
 describe("writeSettings (atomic, canonical)", () => {
   test("writes tmp then renames over target; canonical 4-key JSON + newline", () => {
     const io = fakeIo({});
-    writeSettings(ENV, { mcp: "off", webTools: "on", searchProvider: "kagi", imageTools: "off", convertTools: "on", providerRetries: 2 }, io);
+    writeSettings(ENV, { mcp: "off", webTools: "on", searchProvider: "kagi", imageTools: "off", convertTools: "on", providerRetries: 2, usageInsights: "on" }, io);
     const target = settingsPath(ENV);
     const tmp = `${target}.test-uuid.tmp`;
-    const expected = `${JSON.stringify({ mcp: "off", webTools: "on", searchProvider: "kagi", imageTools: "off", convertTools: "on", providerRetries: 2 }, null, 2)}\n`;
+    const expected = `${JSON.stringify({ mcp: "off", webTools: "on", searchProvider: "kagi", imageTools: "off", convertTools: "on", providerRetries: 2, usageInsights: "on" }, null, 2)}\n`;
     expect(io.writeFileSync).toHaveBeenCalledWith(tmp, expected);
     expect(io.renameSync).toHaveBeenCalledWith(tmp, target);
   });
@@ -112,7 +126,7 @@ describe("writeSettings (atomic, canonical)", () => {
   test("real round-trip: file exists, no tmp leftovers, read-back equals", () => {
     const dir = mkdtempSync(join(tmpdir(), "bjy9-settings-"));
     const env = { PI_CODING_AGENT_DIR: dir } as NodeJS.ProcessEnv;
-    const settings = { mcp: "off" as const, webTools: "on" as const, searchProvider: "exa" as const, imageTools: "on" as const, convertTools: "on" as const, providerRetries: 2 };
+    const settings = { mcp: "off" as const, webTools: "on" as const, searchProvider: "exa" as const, imageTools: "on" as const, convertTools: "on" as const, providerRetries: 2, usageInsights: "on" as const };
     writeSettings(env, settings);
     expect(readSettings(env)).toEqual(settings);
     expect(readdirSync(dir)).toEqual(["lunaroute.json"]);
@@ -189,6 +203,18 @@ describe("decisions", () => {
     expect(resolveSearchProvider({ ...DEFAULT_SETTINGS, searchProvider: "brave" })).toBe("brave");
     expect(resolveSearchProvider({ ...DEFAULT_SETTINGS, searchProvider: "exa" })).toBe("exa");
   });
+
+  test("usageInsightsEnabled: file on → on; file off → off", () => {
+    expect(usageInsightsEnabled({}, DEFAULT_SETTINGS)).toBe(true);
+    expect(usageInsightsEnabled({}, { ...DEFAULT_SETTINGS, usageInsights: "off" })).toBe(false);
+  });
+
+  test("usageInsightsEnabled: env off|0|false wins over file on; never enables past file off", () => {
+    for (const v of ["off", "0", "false"]) {
+      expect(usageInsightsEnabled({ LUNAROUTE_USAGE_INSIGHTS: v }, DEFAULT_SETTINGS)).toBe(false);
+    }
+    expect(usageInsightsEnabled({ LUNAROUTE_USAGE_INSIGHTS: "on" }, { ...DEFAULT_SETTINGS, usageInsights: "off" })).toBe(false);
+  });
 });
 
 describe("providerRetries", () => {
@@ -197,7 +223,7 @@ describe("providerRetries", () => {
 
   test("defaults to 2 when the key is absent", () => {
     expect(DEFAULT_SETTINGS.providerRetries).toBe(2);
-    expect(readSettings(ENV, fakeIo({}))).toMatchObject({ providerRetries: 2 });
+    expect(readSettings(ENV, fakeIo({}))).toMatchObject({ providerRetries: 2, usageInsights: "on" });
   });
 
   test("accepts an integer or a numeric string", () => {

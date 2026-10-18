@@ -4,10 +4,12 @@ import { DEFAULT_SETTINGS, type LunarouteSettings } from "../src/settings.js";
 import {
 	buildSettingsItems,
 	createSettingChangeApplier,
+	runUsageCommand,
 	registerLunarouteSettingsCommand,
 	type SettingsCommandDeps,
 } from "../src/settings-ui.js";
 import { _resetImageToolsState, registerImageTools } from "../src/image-tools.js";
+import { _resetInsightsState, isInsightsOn } from "../src/usage.js";
 import { _resetConvertToolsState, registerConvertTools } from "../src/convert-tools.js";
 import { _resetWebToolsState, registerWebTools, type FetchLike } from "../src/web-tools.js";
 
@@ -99,21 +101,22 @@ beforeEach(() => {
 // ============================================================================
 
 describe("buildSettingsItems", () => {
-	test("six rows with the spec'd ids, labels, and value cycles", () => {
+	test("seven rows with the spec'd ids, labels, and value cycles", () => {
 		const items = buildSettingsItems(DEFAULT_SETTINGS);
-		expect(items.map((i) => i.id)).toEqual(["mcp", "webTools", "imageTools", "convertTools", "searchProvider", "providerRetries"]);
+		expect(items.map((i) => i.id)).toEqual(["mcp", "webTools", "imageTools", "convertTools", "searchProvider", "usageInsights", "providerRetries"]);
 		expect(items[0]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[1]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[2]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[3]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[4]).toMatchObject({ currentValue: "server", values: ["server", "brave", "exa", "kagi"] });
-		expect(items[5]).toMatchObject({ currentValue: "2", values: ["0", "1", "2", "3", "4", "5"] });
+		expect(items[5]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
+		expect(items[6]).toMatchObject({ currentValue: "2", values: ["0", "1", "2", "3", "4", "5"] });
 	});
 
 	test("reflects the current settings values", () => {
-		const settings: LunarouteSettings = { mcp: "off", webTools: "off", searchProvider: "kagi", imageTools: "on", convertTools: "on", providerRetries: 2 };
+		const settings: LunarouteSettings = { mcp: "off", webTools: "off", searchProvider: "kagi", imageTools: "on", convertTools: "on", providerRetries: 2, usageInsights: "on" };
 		const items = buildSettingsItems(settings);
-		expect(items.map((i) => i.currentValue)).toEqual(["off", "off", "on", "on", "kagi", "2"]);
+		expect(items.map((i) => i.currentValue)).toEqual(["off", "off", "on", "on", "kagi", "on", "2"]);
 	});
 });
 
@@ -500,7 +503,7 @@ describe("registerLunarouteSettingsCommand", () => {
 		select.mockResolvedValue("Settings");
 		(custom as ReturnType<typeof vi.fn>).mockImplementation(async () => {});
 		await options.handler("", ctx);
-		expect(select).toHaveBeenCalledWith("LunaRoute", ["Settings", "Refresh models"]);
+		expect(select).toHaveBeenCalledWith("LunaRoute", ["Settings", "Refresh models", "Usage"]);
 		expect(custom).toHaveBeenCalled();
 		expect(ctx.modelRegistry.refresh).not.toHaveBeenCalled();
 	});
@@ -802,5 +805,159 @@ describe("providerRetries row", () => {
 		expect(write).toHaveBeenCalledWith(ENV, { ...DEFAULT_SETTINGS, providerRetries: 4 });
 		expect(ui.notify).not.toHaveBeenCalled();
 		expect(pi.setActiveTools).not.toHaveBeenCalled();
+	});
+});
+
+// ============================================================================
+// /lunaroute usage (kata: usage insights)
+// ============================================================================
+
+describe("runUsageCommand", () => {
+	const DEPS: SettingsCommandDeps = { env: ENV, version: "0.6.0-test", sessionId: "s" };
+	const STATS = { requests: 2, totalMs: 120, maxMs: 100, lastMs: 20 };
+	const SNAPSHOT = {
+		plan: { id: "pro", name: "Pro", interactiveLanes: 4 },
+		period: { start: "2026-10-01T00:00:00Z", end: "2026-10-31T00:00:00Z" },
+		totals: { requests: 812, queuedMs: 482000, requestMs: 1900000, rejected: 3, rejectQueuedMs: 142000 },
+		status: "elevated" as const,
+	};
+
+	function ctxWith(key: string | undefined) {
+		const notify = vi.fn();
+		return {
+			ctx: {
+				ui: { notify },
+				modelRegistry: { getApiKeyForProvider: vi.fn(async () => key) },
+			},
+			notify,
+		};
+	}
+
+	function snapshotClient(snapshot: unknown) {
+		return () => ({
+			listTools: async () => [],
+			callTool: async () => ({ content: [{ type: "text", text: JSON.stringify(snapshot) }] }),
+		});
+	}
+
+	test("says off when insights are disabled, after the key check", async () => {
+		const { ctx, notify } = ctxWith("lr_key");
+		await runUsageCommand(
+			ctx,
+			{ ...DEPS, read: () => ({ ...DEFAULT_SETTINGS, usageInsights: "off" }) },
+			() => STATS,
+			snapshotClient(SNAPSHOT),
+		);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("off"), "info");
+	});
+
+	test("a missing key wins over the off message", async () => {
+		const { ctx, notify } = ctxWith(undefined);
+		await runUsageCommand(
+			ctx,
+			{ ...DEPS, read: () => ({ ...DEFAULT_SETTINGS, usageInsights: "off" }) },
+			() => STATS,
+			snapshotClient(SNAPSHOT),
+		);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/login lunaroute"), "info");
+		expect(notify.mock.calls[0][0]).not.toContain("insights are off");
+	});
+
+	test("reports the snapshot and the session stats", async () => {
+		const { ctx, notify } = ctxWith("lr_key");
+		await runUsageCommand(ctx, { ...DEPS, read: () => DEFAULT_SETTINGS }, () => STATS, snapshotClient(SNAPSHOT));
+		const text = notify.mock.calls[0][0] as string;
+		expect(text).toContain("Pro");
+		expect(text).toContain("4 lanes");
+		expect(text).toContain("3 rejected");
+		expect(text).toContain("this session: 2 requests");
+	});
+
+	test("falls back to session stats when the tool call fails", async () => {
+		const { ctx, notify } = ctxWith("lr_key");
+		await runUsageCommand(ctx, { ...DEPS, read: () => DEFAULT_SETTINGS }, () => STATS, () => ({
+			listTools: async () => [],
+			callTool: async () => {
+				throw new Error("HTTP 500");
+			},
+		}));
+		const text = notify.mock.calls[0][0] as string;
+		expect(text).toContain("usage unavailable");
+		expect(text).toContain("this session: 2 requests");
+	});
+});
+
+describe("/lunaroute usage routing", () => {
+	test("the subcommand is reachable and reports the login hint without a key", async () => {
+		const { pi } = fakePi();
+		registerLunarouteSettingsCommand(pi, { env: ENV, version: "0.6.0-test", sessionId: "s" });
+		const call = (pi.registerCommand as ReturnType<typeof vi.fn>).mock.calls[0] as [
+			string,
+			{ handler: (args: string, ctx: unknown) => Promise<void> },
+		];
+		const notify = vi.fn();
+		await call[1].handler("usage", {
+			hasUI: true,
+			mode: "tui",
+			modelRegistry: { getApiKeyForProvider: vi.fn(async () => undefined) },
+			ui: { notify, custom: vi.fn(), select: vi.fn() },
+		});
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/login lunaroute"), "info");
+	});
+
+	test("the bare menu offers Usage", async () => {
+		const { pi } = fakePi();
+		registerLunarouteSettingsCommand(pi, { env: ENV, version: "0.6.0-test", sessionId: "s" });
+		const call = (pi.registerCommand as ReturnType<typeof vi.fn>).mock.calls[0] as [
+			string,
+			{ handler: (args: string, ctx: unknown) => Promise<void> },
+		];
+		const select = vi.fn(async (_title: string, _options: string[]) => undefined as string | undefined);
+		await call[1].handler("", {
+			hasUI: true,
+			mode: "tui",
+			modelRegistry: { getApiKeyForProvider: vi.fn(async () => undefined) },
+			ui: { notify: vi.fn(), custom: vi.fn(), select },
+		});
+		expect(select.mock.calls[0][1]).toContain("Usage");
+	});
+});
+
+describe("usageInsights setting row", () => {
+	test("the settings list offers the usageInsights toggle", () => {
+		expect(buildSettingsItems(DEFAULT_SETTINGS).map((i) => i.id)).toContain("usageInsights");
+	});
+
+	test("toggling the row updates the shared gate immediately", async () => {
+		_resetInsightsState();
+		const { pi } = fakePi();
+		const ui = { notify: vi.fn() };
+		const applier = createSettingChangeApplier(
+			pi,
+			{ env: ENV, version: "t", sessionId: "s", write: vi.fn() as never },
+			ui,
+			async () => undefined,
+			DEFAULT_SETTINGS,
+		);
+		await applier("usageInsights", "off");
+		expect(isInsightsOn()).toBe(false);
+		await applier("usageInsights", "on");
+		expect(isInsightsOn()).toBe(true);
+	});
+
+	test("the env override still wins over a live on-toggle", async () => {
+		_resetInsightsState();
+		vi.stubEnv("LUNAROUTE_USAGE_INSIGHTS", "off");
+		const { pi } = fakePi();
+		const applier = createSettingChangeApplier(
+			pi,
+			{ env: process.env, version: "t", sessionId: "s", write: vi.fn() as never },
+			{ notify: vi.fn() },
+			async () => undefined,
+			{ ...DEFAULT_SETTINGS, usageInsights: "off" },
+		);
+		await applier("usageInsights", "on");
+		expect(isInsightsOn()).toBe(false);
+		vi.unstubAllEnvs();
 	});
 });

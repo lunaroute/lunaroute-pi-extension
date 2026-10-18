@@ -394,7 +394,7 @@ describe("registerConvertTools", () => {
 		const log: { method: string }[] = [];
 		const registration = await registerConvertTools(pi, {
 			key: "lr_key", env: {}, version: "1.0.0", sessionId: "s", fetchImpl: mcpFetch({}, log),
-			settings: { mcp: "on", webTools: "on", searchProvider: "server", imageTools: "on", convertTools: "off", providerRetries: 2 },
+			settings: { mcp: "on", webTools: "on", searchProvider: "server", imageTools: "on", convertTools: "off", providerRetries: 2, usageInsights: "on" },
 		});
 		expect(registration).toEqual({ convert: "skipped-disabled" });
 		expect(registered).toHaveLength(0);

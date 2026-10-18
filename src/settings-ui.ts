@@ -2,11 +2,12 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
-import { LUNAROUTE_PROVIDER } from "./lunaroute.js";
-import { PROVIDER_RETRIES_MAX, readSettings, settingsPath, writeSettings, type LunarouteSettings } from "./settings.js";
+import { LUNAROUTE_PROVIDER, buildAttributionHeaders, resolveMcpUrl } from "./lunaroute.js";
+import { PROVIDER_RETRIES_MAX, readSettings, settingsPath, writeSettings, usageInsightsEnabled, type LunarouteSettings } from "./settings.js";
 import { getRegisteredImageToolNames, invalidateImageToolRegistrations, registerImageTools } from "./image-tools.js";
 import { getRegisteredConvertToolNames, invalidateConvertToolRegistrations, registerConvertTools } from "./convert-tools.js";
-import { getRegisteredWebToolNames, registerWebTools } from "./web-tools.js";
+import { getRegisteredWebToolNames, createLunarouteMcpClient, registerWebTools, type LunarouteMcpClient } from "./web-tools.js";
+import { emptyStats, fetchUsage, formatUsageReport, setInsightsOn, type SessionQueueStats } from "./usage.js";
 
 /** The `/lunaroute` settings command (kata bjy9): a pi-native SettingsList
  * TUI for MCP on/off, web tools on/off, and the default search provider.
@@ -64,6 +65,13 @@ export function buildSettingsItems(settings: LunarouteSettings): SettingItem[] {
 			values: ["server", "brave", "exa", "kagi"],
 		},
 		{
+			id: "usageInsights",
+			label: "Usage insights",
+			description: "Queue/usage messages and /lunaroute usage",
+			currentValue: settings.usageInsights,
+			values: ["on", "off"],
+		},
+		{
 			id: "providerRetries",
 			label: "Provider retries (429)",
 			description: "Retries for model requests, honoring LunaRoute's Retry-After; 0 = off",
@@ -111,6 +119,12 @@ export function createSettingChangeApplier(
 		// Both are read at call time: searchProvider by web_search, providerRetries
 		// by the model-request stream — no registration to swap.
 		if (id === "searchProvider" || id === "providerRetries") return;
+		if (id === "usageInsights") {
+			// Recompute through the decision function: the env escape hatch must
+			// stay authoritative over a live "on".
+			setInsightsOn(usageInsightsEnabled(deps.env, settings));
+			return;
+		}
 		try {
 			if (id === "webTools") await applyWebTools(pi, deps, ui, getApiKey, settings, newValue === "on");
 			if (id === "imageTools") {
@@ -230,10 +244,14 @@ async function applyWebTools(
 	}
 }
 
-/** Register the `/lunaroute` command: bare (menu), `settings`, `models-refresh`. */
-export function registerLunarouteSettingsCommand(pi: ExtensionAPI, deps: SettingsCommandDeps): void {
+/** Register the `/lunaroute` command: bare (menu), `settings`, `models-refresh`, `usage`. */
+export function registerLunarouteSettingsCommand(
+	pi: ExtensionAPI,
+	deps: SettingsCommandDeps,
+	getQueueStats: () => SessionQueueStats = emptyStats,
+): void {
 	pi.registerCommand("lunaroute", {
-		description: "LunaRoute settings and model catalog refresh",
+		description: "LunaRoute settings, model catalog refresh, and usage",
 		handler: async (args, ctx) => {
 			const sub = args.trim();
 			if (sub === "models-refresh") {
@@ -244,8 +262,12 @@ export function registerLunarouteSettingsCommand(pi: ExtensionAPI, deps: Setting
 				await openSettingsCommand(pi, deps, ctx);
 				return;
 			}
+			if (sub === "usage") {
+				await runUsageCommand(ctx, deps, getQueueStats);
+				return;
+			}
 			if (sub) {
-				ctx.ui.notify(`Unknown option "${sub}" — use /lunaroute settings or /lunaroute models-refresh`, "info");
+				ctx.ui.notify(`Unknown option "${sub}" — use /lunaroute settings, models-refresh or usage`, "info");
 				return;
 			}
 			if (!ctx.hasUI) return; // print/json modes: nothing to render
@@ -254,9 +276,10 @@ export function registerLunarouteSettingsCommand(pi: ExtensionAPI, deps: Setting
 				ctx.ui.notify(`Run /lunaroute in interactive mode, or edit ${settingsPath(deps.env)}`, "info");
 				return;
 			}
-			const choice = await ctx.ui.select("LunaRoute", ["Settings", "Refresh models"]);
+			const choice = await ctx.ui.select("LunaRoute", ["Settings", "Refresh models", "Usage"]);
 			if (choice === "Settings") await openSettingsCommand(pi, deps, ctx);
 			else if (choice === "Refresh models") await refreshModelsCommand(ctx);
+			else if (choice === "Usage") await runUsageCommand(ctx, deps, getQueueStats);
 		},
 	});
 }
@@ -439,4 +462,57 @@ async function applyConvertTools(
 	} else {
 		ui.notify("LunaRoute convert tools are not available for your organization.", "info");
 	}
+}
+
+// ============================================================================
+// /lunaroute usage
+// ============================================================================
+
+/** Builds the MCP client for the usage call; injectable for tests. */
+export type UsageClientFactory = (key: string) => LunarouteMcpClient;
+
+function defaultUsageClient(key: string, deps: SettingsCommandDeps): LunarouteMcpClient {
+	return createLunarouteMcpClient({
+		url: resolveMcpUrl(deps.env),
+		// Same auth header the first-class MCP tools use.
+		headers: { "LUNAROUTE-API-KEY": key, ...buildAttributionHeaders(deps.version, deps.sessionId) },
+		fetchImpl: fetch,
+	});
+}
+
+/** `/lunaroute usage`: the on-demand usage report.
+ *
+ * Login is checked first — without a key there is nothing to show, and the
+ * login hint is the blocking next step. Then the insights toggle, then the
+ * server's aggregate tool, falling back to this session's measured queueing
+ * when the server does not answer. Never throws. */
+export async function runUsageCommand(
+	ctx: {
+		ui: { notify(message: string, type?: "info" | "warning" | "error"): void };
+		modelRegistry: { getApiKeyForProvider(provider: string): Promise<string | undefined> };
+	},
+	deps: SettingsCommandDeps,
+	getQueueStats: () => SessionQueueStats = emptyStats,
+	clientFactory?: UsageClientFactory,
+): Promise<void> {
+	const key = await ctx.modelRegistry.getApiKeyForProvider(LUNAROUTE_PROVIDER).catch(() => undefined);
+	if (!key) {
+		ctx.ui.notify("Not logged in — run /login lunaroute to see usage.", "info");
+		return;
+	}
+	const settings = (deps.read ?? readSettings)(deps.env);
+	if (!usageInsightsEnabled(deps.env, settings)) {
+		ctx.ui.notify("Usage insights are off — enable in /lunaroute settings.", "info");
+		return;
+	}
+	const client = (clientFactory ?? ((k: string) => defaultUsageClient(k, deps)))(key);
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 10_000);
+	let snapshot;
+	try {
+		snapshot = await fetchUsage(client, controller.signal);
+	} finally {
+		clearTimeout(timeout);
+	}
+	ctx.ui.notify(formatUsageReport(snapshot, getQueueStats()), "info");
 }

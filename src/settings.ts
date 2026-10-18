@@ -5,6 +5,7 @@ import {
   LUNAROUTE_DEFAULT_PROVIDER_RETRIES,
   LUNAROUTE_ENV_CONVERT_TOOLS,
   LUNAROUTE_ENV_IMAGE_TOOLS,
+  LUNAROUTE_ENV_USAGE_INSIGHTS,
   LUNAROUTE_ENV_WEB_TOOLS,
   agentDirFromEnv,
 } from "./lunaroute.js";
@@ -29,6 +30,8 @@ export interface LunarouteSettings {
   convertTools: Toggle;
   /** Provider-level retries for model requests; 0 = off (kata z5y7). */
   providerRetries: number;
+  /** Queue/usage messages and `/lunaroute usage`; on by default. */
+  usageInsights: Toggle;
 }
 
 export const DEFAULT_SETTINGS: LunarouteSettings = {
@@ -38,6 +41,7 @@ export const DEFAULT_SETTINGS: LunarouteSettings = {
   imageTools: "on",
   convertTools: "on",
   providerRetries: LUNAROUTE_DEFAULT_PROVIDER_RETRIES,
+  usageInsights: "on",
 };
 
 /** Upper bound for providerRetries — also the `/lunaroute` UI's last option. */
@@ -120,6 +124,7 @@ export function readSettings(env: NodeJS.ProcessEnv, io: SettingsIo = defaultIo)
     imageTools: parseToggle(obj.imageTools, DEFAULT_SETTINGS.imageTools),
     convertTools: parseToggle(obj.convertTools, DEFAULT_SETTINGS.convertTools),
     providerRetries: parseProviderRetries(obj.providerRetries),
+    usageInsights: parseToggle(obj.usageInsights, DEFAULT_SETTINGS.usageInsights),
     searchProvider: parseSearchProvider(obj.searchProvider),
   };
 }
@@ -175,4 +180,12 @@ export function mcpEnabled(settings: LunarouteSettings): boolean {
 /** Provider to pass to the MCP web_search tool; undefined = server default. */
 export function resolveSearchProvider(settings: LunarouteSettings): ConcreteSearchProvider | undefined {
   return settings.searchProvider === "server" ? undefined : settings.searchProvider;
+}
+
+/** Usage insights enabled? Same contract as the tool toggles — the env escape
+ * hatch only ever disables; the file is the user knob. */
+export function usageInsightsEnabled(env: NodeJS.ProcessEnv, settings: LunarouteSettings): boolean {
+  const v = env[LUNAROUTE_ENV_USAGE_INSIGHTS];
+  if (v === "off" || v === "0" || v === "false") return false;
+  return settings.usageInsights === "on";
 }
