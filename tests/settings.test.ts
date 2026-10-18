@@ -64,6 +64,7 @@ describe("readSettings (tolerant reader)", () => {
       searchProvider: "server",
       imageTools: "on",
       convertTools: "on",
+      providerRetries: 2,
     });
   });
 
@@ -75,6 +76,7 @@ describe("readSettings (tolerant reader)", () => {
       searchProvider: "server",
       imageTools: "on",
       convertTools: "on",
+      providerRetries: 2,
     });
   });
 
@@ -91,6 +93,7 @@ describe("readSettings (tolerant reader)", () => {
       searchProvider: "brave",
       imageTools: "off",
       convertTools: "off",
+      providerRetries: 2,
     });
   });
 });
@@ -98,10 +101,10 @@ describe("readSettings (tolerant reader)", () => {
 describe("writeSettings (atomic, canonical)", () => {
   test("writes tmp then renames over target; canonical 4-key JSON + newline", () => {
     const io = fakeIo({});
-    writeSettings(ENV, { mcp: "off", webTools: "on", searchProvider: "kagi", imageTools: "off", convertTools: "on" }, io);
+    writeSettings(ENV, { mcp: "off", webTools: "on", searchProvider: "kagi", imageTools: "off", convertTools: "on", providerRetries: 2 }, io);
     const target = settingsPath(ENV);
     const tmp = `${target}.test-uuid.tmp`;
-    const expected = `${JSON.stringify({ mcp: "off", webTools: "on", searchProvider: "kagi", imageTools: "off", convertTools: "on" }, null, 2)}\n`;
+    const expected = `${JSON.stringify({ mcp: "off", webTools: "on", searchProvider: "kagi", imageTools: "off", convertTools: "on", providerRetries: 2 }, null, 2)}\n`;
     expect(io.writeFileSync).toHaveBeenCalledWith(tmp, expected);
     expect(io.renameSync).toHaveBeenCalledWith(tmp, target);
   });
@@ -109,7 +112,7 @@ describe("writeSettings (atomic, canonical)", () => {
   test("real round-trip: file exists, no tmp leftovers, read-back equals", () => {
     const dir = mkdtempSync(join(tmpdir(), "bjy9-settings-"));
     const env = { PI_CODING_AGENT_DIR: dir } as NodeJS.ProcessEnv;
-    const settings = { mcp: "off" as const, webTools: "on" as const, searchProvider: "exa" as const, imageTools: "on" as const, convertTools: "on" as const };
+    const settings = { mcp: "off" as const, webTools: "on" as const, searchProvider: "exa" as const, imageTools: "on" as const, convertTools: "on" as const, providerRetries: 2 };
     writeSettings(env, settings);
     expect(readSettings(env)).toEqual(settings);
     expect(readdirSync(dir)).toEqual(["lunaroute.json"]);
@@ -185,5 +188,36 @@ describe("decisions", () => {
     expect(resolveSearchProvider({ ...DEFAULT_SETTINGS, searchProvider: "kagi" })).toBe("kagi");
     expect(resolveSearchProvider({ ...DEFAULT_SETTINGS, searchProvider: "brave" })).toBe("brave");
     expect(resolveSearchProvider({ ...DEFAULT_SETTINGS, searchProvider: "exa" })).toBe("exa");
+  });
+});
+
+describe("providerRetries", () => {
+  const path = settingsPath(ENV);
+  const read = (value: string) => readSettings(ENV, fakeIo({ [path]: value })).providerRetries;
+
+  test("defaults to 2 when the key is absent", () => {
+    expect(DEFAULT_SETTINGS.providerRetries).toBe(2);
+    expect(readSettings(ENV, fakeIo({}))).toMatchObject({ providerRetries: 2 });
+  });
+
+  test("accepts an integer or a numeric string", () => {
+    expect(read('{"providerRetries":3}')).toBe(3);
+    expect(read('{"providerRetries":"4"}')).toBe(4);
+  });
+
+  test("0 is a valid value (retries off)", () => {
+    expect(read('{"providerRetries":0}')).toBe(0);
+    expect(read('{"providerRetries":"0"}')).toBe(0);
+  });
+
+  test("clamps to 0..5", () => {
+    expect(read('{"providerRetries":9}')).toBe(5);
+    expect(read('{"providerRetries":-1}')).toBe(0);
+  });
+
+  test("rejects malformed values (no silent 0/float/bool)", () => {
+    for (const bad of ['""', '"  "', '"2.5"', "2.5", "true", "null", "[]", '"three"']) {
+      expect(read(`{"providerRetries":${bad}}`)).toBe(2);
+    }
   });
 });

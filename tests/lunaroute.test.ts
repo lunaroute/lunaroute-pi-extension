@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Api, Context, Model, ProviderStreams } from "@earendil-works/pi-ai";
 import {
   DEFAULT_API,
   DEFAULT_API_URL,
@@ -17,6 +18,7 @@ import {
   buildAttributionHeaders,
   buildExchangeBody,
   buildPiAuthUrl,
+  buildRetryingStreamSimple,
   computePkceChallenge,
   generatePkceVerifier,
   generateSessionId,
@@ -653,5 +655,77 @@ describe("System One classifier models (kata g2d6)", () => {
 
     const models = readPersistedModels({ PI_CODING_AGENT_DIR: dir, LUNAROUTE_ROUTING_URL: "http://new.example/v1" }, true);
     expect(models[0]).toMatchObject({ type: "classifier", api: SYSTEMONE_CLASSIFIER_API, baseUrl: "http://new.example/v1" });
+  });
+});
+
+describe("buildRetryingStreamSimple", () => {
+  type FakeApi = {
+    stream: ReturnType<typeof vi.fn>;
+    streamSimple: ReturnType<typeof vi.fn>;
+  };
+  const fakeApi = (): FakeApi => ({ stream: vi.fn(() => "full"), streamSimple: vi.fn(() => "simple") });
+  const model = { api: "openai-responses" } as unknown as Model<Api>;
+  const context = {} as Context;
+  const loadApi = (api: FakeApi) => (wire: string) => {
+    expect(typeof wire).toBe("string");
+    return api as unknown as ProviderStreams;
+  };
+
+  test("injects the default retries when the host leaves maxRetries unset", () => {
+    const api = fakeApi();
+    buildRetryingStreamSimple(2, loadApi(api))(model, context, undefined);
+    expect(api.streamSimple).toHaveBeenCalledWith(model, context, { maxRetries: 2 });
+  });
+
+  test("preserves an explicit maxRetries of 0 (opt out)", () => {
+    const api = fakeApi();
+    buildRetryingStreamSimple(2, loadApi(api), () => 4)(model, context, { maxRetries: 0 });
+    expect(api.streamSimple.mock.calls[0][2]).toMatchObject({ maxRetries: 0 });
+  });
+
+  test("uses the configured retry count when the host leaves maxRetries unset", () => {
+    const api = fakeApi();
+    buildRetryingStreamSimple(2, loadApi(api), () => 4)(model, context, undefined);
+    expect(api.streamSimple.mock.calls[0][2]).toMatchObject({ maxRetries: 4 });
+  });
+
+  test("forwards the other options unchanged", () => {
+    const api = fakeApi();
+    const signal = new AbortController().signal;
+    buildRetryingStreamSimple(2, loadApi(api))(model, context, { apiKey: "k", headers: { a: "b" }, signal });
+    expect(api.streamSimple.mock.calls[0][2]).toMatchObject({ apiKey: "k", headers: { a: "b" }, signal, maxRetries: 2 });
+  });
+
+  test("dispatches to the api matching model.api", () => {
+    const seen: string[] = [];
+    const api = fakeApi();
+    const load = (wire: string) => {
+      seen.push(wire);
+      return api as unknown as ProviderStreams;
+    };
+    buildRetryingStreamSimple(2, load)({ api: "openai-completions" } as unknown as Model<Api>, context, undefined);
+    expect(seen).toEqual(["openai-completions"]);
+  });
+
+  test("routes full-API options to stream so they are not dropped", () => {
+    for (const full of [
+      { reasoningEffort: "high" },
+      { reasoningSummary: null },
+      { toolChoice: "auto" },
+      { serviceTier: "auto" },
+    ]) {
+      const api = fakeApi();
+      buildRetryingStreamSimple(2, loadApi(api))(model, context, full as never);
+      expect(api.stream).toHaveBeenCalledTimes(1);
+      expect(api.streamSimple).not.toHaveBeenCalled();
+      expect(api.stream.mock.calls[0][2]).toMatchObject({ maxRetries: 2, ...full });
+    }
+  });
+
+  test("keeps a simple reasoning level on the streamSimple path", () => {
+    const api = fakeApi();
+    buildRetryingStreamSimple(2, loadApi(api))(model, context, { reasoning: "high" });
+    expect(api.streamSimple).toHaveBeenCalledTimes(1);
+    expect(api.stream).not.toHaveBeenCalled();
   });
 });

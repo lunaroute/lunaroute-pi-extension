@@ -3,7 +3,7 @@ import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
 import { LUNAROUTE_PROVIDER } from "./lunaroute.js";
-import { readSettings, settingsPath, writeSettings, type LunarouteSettings } from "./settings.js";
+import { PROVIDER_RETRIES_MAX, readSettings, settingsPath, writeSettings, type LunarouteSettings } from "./settings.js";
 import { getRegisteredImageToolNames, invalidateImageToolRegistrations, registerImageTools } from "./image-tools.js";
 import { getRegisteredConvertToolNames, invalidateConvertToolRegistrations, registerConvertTools } from "./convert-tools.js";
 import { getRegisteredWebToolNames, registerWebTools } from "./web-tools.js";
@@ -63,6 +63,13 @@ export function buildSettingsItems(settings: LunarouteSettings): SettingItem[] {
 			currentValue: settings.searchProvider,
 			values: ["server", "brave", "exa", "kagi"],
 		},
+		{
+			id: "providerRetries",
+			label: "Provider retries (429)",
+			description: "Retries for model requests, honoring LunaRoute's Retry-After; 0 = off",
+			currentValue: String(settings.providerRetries),
+			values: Array.from({ length: PROVIDER_RETRIES_MAX + 1 }, (_, i) => String(i)),
+		},
 	];
 }
 
@@ -94,14 +101,16 @@ export function createSettingChangeApplier(
 	let convertToolsApplyGeneration = 0;
 
 	return async (id: string, newValue: string): Promise<void> => {
-		settings = { ...settings, [id]: newValue } as LunarouteSettings;
+		settings = { ...settings, [id]: id === "providerRetries" ? Number(newValue) : newValue } as LunarouteSettings;
 		try {
 			write(deps.env, settings);
 		} catch (err) {
 			ui.notify(`Failed to save lunaroute.json: ${err instanceof Error ? err.message : String(err)}`, "error");
 			return;
 		}
-		if (id === "searchProvider") return; // next web_search call reads it
+		// Both are read at call time: searchProvider by web_search, providerRetries
+		// by the model-request stream — no registration to swap.
+		if (id === "searchProvider" || id === "providerRetries") return;
 		try {
 			if (id === "webTools") await applyWebTools(pi, deps, ui, getApiKey, settings, newValue === "on");
 			if (id === "imageTools") {
