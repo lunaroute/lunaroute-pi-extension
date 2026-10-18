@@ -132,16 +132,21 @@ Expected: FAIL.
 ```sql
 SELECT
   COUNT(*),
-  LEAST(COALESCE(SUM(queue_wait_us), 0), 9223372036854775807)::bigint,
-  LEAST(COALESCE(SUM(latency_us), 0), 9223372036854775807)::bigint,
+  LEAST(COALESCE(SUM(queue_wait_us), 0) / 1000, 9223372036854775807)::bigint,
+  LEAST(COALESCE(SUM(latency_us), 0) / 1000, 9223372036854775807)::bigint,
   COUNT(*) FILTER (WHERE dispatch_timestamp IS NULL),
-  LEAST(COALESCE(SUM(queue_wait_us) FILTER (WHERE dispatch_timestamp IS NULL), 0), 9223372036854775807)::bigint
+  LEAST(COALESCE(SUM(queue_wait_us) FILTER (WHERE dispatch_timestamp IS NULL), 0) / 1000, 9223372036854775807)::bigint
 FROM usage_events
 WHERE org_id = $1 AND user_id = $2
   AND request_timestamp >= $3 AND request_timestamp < $4;
 ```
 
-`SUM(bigint)` returns `numeric` in Postgres and can exceed `i64`, which would
+**The `/ 1000` is the microsecond→millisecond conversion** — the source columns
+are µs and every `*_ms` field in the payload is ms. Numeric division truncates
+toward zero, which is the intended rounding (never round up into a bigger
+number than was actually spent). Do **not** convert again in Rust: the query
+returns milliseconds. `SUM(bigint)` returns `numeric` in Postgres and can exceed
+`i64`, which would
 fail SQLx decoding. `LEAST(..., 9223372036854775807)` clamps **before** the
 `::bigint` cast, so the cast always succeeds and the result matches the
 saturating semantics the extension assumes. `requests` counts all rows; `rejected` counts **all** gate-rejection rows (`dispatch_timestamp IS NULL`) regardless of whether `queue_wait_us` is NULL — the two columns must not disagree on what a rejection is. `reject_queued_ms` sums only the non-NULL waits (NULLs drop out of `SUM`).
