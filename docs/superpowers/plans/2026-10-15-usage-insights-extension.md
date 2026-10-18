@@ -391,12 +391,17 @@ Expected: FAIL.
 spec) and a `let queueStats = emptyStats()` that is **reset to `emptyStats()`
 at the top of every `session_start`** — session stats are per session even
 though the proactive check is per process. In `session_start`, when `ctx.hasUI`
-and `usageInsightsEnabled(readSettings(process.env))`, if `!usageCheckDone` set
-it `true` and run the check (build the client from the session key, `fetchUsage`, `nudgeMessage`, `ctx.ui.notify` on a non-undefined message; swallow all errors). Register
+and `usageInsightsEnabled(process.env, readSettings(process.env))` — **both
+arguments**, matching the Task 1 signature — if `!usageCheckDone` set
+it `true` and run the check (build the client from the session key, `fetchUsage`
+with a 10 s abort signal, `nudgeMessage`, `ctx.ui.notify` on a non-undefined
+message; swallow all errors). The signal is mandatory here: `fetchUsage` is
+unbounded without one and `session_start` must never hang on a stalled MCP
+request. Register
 
 ```ts
 pi.on("after_provider_response", (event) => {
-  if (!usageInsightsEnabled(readSettings(process.env))) return;
+  if (!usageInsightsEnabled(process.env, readSettings(process.env))) return;
   const ms = parseQueueMs(event.headers);
   if (ms !== undefined) queueStats = recordQueueWait(queueStats, ms);
 });

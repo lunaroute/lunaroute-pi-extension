@@ -132,19 +132,19 @@ Expected: FAIL.
 ```sql
 SELECT
   COUNT(*),
-  COALESCE(SUM(queue_wait_us), 0)::bigint,
-  COALESCE(SUM(latency_us), 0)::bigint,
+  LEAST(COALESCE(SUM(queue_wait_us), 0), 9223372036854775807)::bigint,
+  LEAST(COALESCE(SUM(latency_us), 0), 9223372036854775807)::bigint,
   COUNT(*) FILTER (WHERE dispatch_timestamp IS NULL),
-  COALESCE(SUM(queue_wait_us) FILTER (WHERE dispatch_timestamp IS NULL), 0)::bigint
+  LEAST(COALESCE(SUM(queue_wait_us) FILTER (WHERE dispatch_timestamp IS NULL), 0), 9223372036854775807)::bigint
 FROM usage_events
 WHERE org_id = $1 AND user_id = $2
   AND request_timestamp >= $3 AND request_timestamp < $4;
 ```
 
-The `::bigint` casts matter: Postgres `SUM(bigint)` returns `numeric`, and a
-value outside `i64` fails SQLx decoding before Rust can clamp. With the cast
-the driver hands back `i64`; then convert µs → ms with integer division and
-`saturating` arithmetic so a corrupt huge sum cannot panic. `requests` counts all rows; `rejected` counts **all** gate-rejection rows (`dispatch_timestamp IS NULL`) regardless of whether `queue_wait_us` is NULL — the two columns must not disagree on what a rejection is. `reject_queued_ms` sums only the non-NULL waits (NULLs drop out of `SUM`).
+`SUM(bigint)` returns `numeric` in Postgres and can exceed `i64`, which would
+fail SQLx decoding. `LEAST(..., 9223372036854775807)` clamps **before** the
+`::bigint` cast, so the cast always succeeds and the result matches the
+saturating semantics the extension assumes. `requests` counts all rows; `rejected` counts **all** gate-rejection rows (`dispatch_timestamp IS NULL`) regardless of whether `queue_wait_us` is NULL — the two columns must not disagree on what a rejection is. `reject_queued_ms` sums only the non-NULL waits (NULLs drop out of `SUM`).
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -261,7 +261,7 @@ Expected: FAIL — header absent.
 
 - [ ] **Step 3: Implement**
 
-At the point the success `Response` is assembled, insert `x-lunaroute-queue-ms` = `queue_wait_us / 1000` (saturating). Optionally add `x-lunaroute-gate-scope` from `timings.gate_scope.as_str()`. Do not touch the 429 path.
+At the point the success `Response` is assembled, insert `x-lunaroute-queue-ms` = `queue_wait_us / 1000` (saturating). **Only this one header** — no `x-lunaroute-gate-scope`; nothing consumes it yet, and an undocumented header is worse than none. Do not touch the 429 path.
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -282,7 +282,7 @@ git commit -m "feat(gateway): expose queue wait as a response header"
 **Files:**
 - Modify: `services/lunaroute-docs/src/content/docs/mcp/index.md` (add `get_usage`), and the gateway/config docs index listing response headers.
 
-- [ ] **Step 1: Document** the tool's payload and the two response headers, including the `unknown` status and the self-scoping guarantee.
+- [ ] **Step 1: Document** the tool's payload and the `x-lunaroute-queue-ms` response header, including the `unknown` status and the self-scoping guarantee.
 - [ ] **Step 2: Commit**
 
 ```bash
