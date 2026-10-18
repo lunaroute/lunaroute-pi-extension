@@ -76,9 +76,11 @@ is minimal and the aggregate tool already captures rejections).
 ### B. Server: aggregate MCP tool `get_usage` (lunaroute-saas)
 
 One read-only tool on the hosted MCP server, self-scoped to the calling key's
-user/org. Reuses the existing usage query. Cached server-side (~60 s), keyed by the
-authenticated `(org_id, user_id)` only — request parameters never key the cache,
-and no cache entry is shared across identities.
+user/org. Reuses the existing usage query. Not cached in v1 — it is one
+`(org_id, user_id, request_timestamp)` aggregate, called on demand and at most
+once per process. If it proves slow, add a cache keyed by the authenticated
+`(org_id, user_id)` only — request parameters never key it, and no entry is
+shared across identities.
 
 ```json
 {
@@ -123,18 +125,21 @@ and no cache entry is shared across identities.
 
 ### D. Extension: per-request collection + proactive check
 
-- In the extension factory, when `usageInsightsEnabled`, register
-  `pi.on("after_provider_response", ...)`. Read `x-lunaroute-queue-ms` (and
+- In the extension factory, register `pi.on("after_provider_response", ...)`
+  unconditionally; the handler checks for our header first and then a cached
+  `insightsOn` flag (refreshed at `session_start` and whenever the settings row
+  changes). No file read per response. Read `x-lunaroute-queue-ms` (and
   optional `x-lunaroute-gate-scope`); ignore the event when the header is
   absent (that is another provider). Collect session counters: count, total,
   max, and last queue ms. Malformed values are ignored (never throw).
 - **Proactive message source is the aggregate tool, not the raw header.**
   At `session_start` (already exists), when enabled and logged in, run the check
   at most once **per process**: a module-level guard (the `adapterNoticeShown`
-  pattern) is set before the call and wraps the whole check, so a reload/resume
-  that re-fires `session_start` — or a second session in the same process —
-  neither re-calls nor re-notifies. The check calls `get_usage` via the
-  extension's MCP client. If `status` is `elevated` or `saturated`, `ui.notify`
+  pattern) is set only after a key is confirmed — a logged-out session must not
+  consume it — and wraps the whole check, so a reload/resume that re-fires
+  `session_start` — or a second session in the same process — neither re-calls
+  nor re-notifies. The check calls `get_usage` via the extension's MCP client
+  with a 10 s abort signal. If `status` is `elevated` or `saturated`, `ui.notify`
   the server-authored message/action. `ok`/`unknown` stay silent. A failed call
   is silent. Deliberately conservative; if per-session cadence is later wanted,
   key the guard on the host's session id.

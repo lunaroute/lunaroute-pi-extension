@@ -258,6 +258,7 @@ it("reports plan, period and queued totals", () => {
 it("falls back to session stats when the snapshot is missing", () => {
   const text = formatUsageReport(undefined, { requests: 2, totalMs: 120, maxMs: 100, lastMs: 20 });
   expect(text).toContain("usage unavailable");
+  expect(text).toContain("this session: 2 requests, 120 ms queued, max 100 ms");
 });
 
 it("nudges only for elevated and saturated", () => {
@@ -274,7 +275,7 @@ Expected: FAIL — not exported.
 
 - [ ] **Step 3: Implement**
 
-A small `formatMs(ms)` helper (seconds/minutes). `formatUsageReport` includes the status line and `suggestedAction.url` when present. Built-in nudge strings are generic ("LunaRoute is queueing your requests often — run /lunaroute usage for details."); the server `message` wins when present.
+A small `formatMs(ms)` helper (seconds/minutes). `formatUsageReport` includes the status line and `suggestedAction.url` when present. **The `undefined`-snapshot branch must still render the measured local stats** — request count, total queued, and max — never discarding them; it only adds "usage unavailable" for the plan/period part. Built-in nudge strings are generic ("LunaRoute is queueing your requests often — run /lunaroute usage for details."); the server `message` wins when present.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -392,29 +393,37 @@ Expected: FAIL.
 ```
 
 `index.ts`: add a module-level `usageCheckDone = false` (process-scoped, per
-spec) and a `let queueStats = emptyStats()` that is **reset to `emptyStats()`
-at the top of every `session_start`** — session stats are per session even
-though the proactive check is per process. In `session_start`, when `ctx.hasUI`
-and `usageInsightsEnabled(process.env, readSettings(process.env))` — **both
-arguments**, matching the Task 1 signature — if `!usageCheckDone` set
-it `true` and run the check (build the client from the session key, `fetchUsage`
-with a 10 s abort signal, `nudgeMessage`, `ctx.ui.notify` on a non-undefined
-message; swallow all errors). The signal is mandatory here: `fetchUsage` is
-unbounded without one and `session_start` must never hang on a stalled MCP
-request. Register
+spec), a `let queueStats = emptyStats()` that is **reset to `emptyStats()` at
+the top of every `session_start`** — session stats are per session even though
+the proactive check is per process — and a cached `let insightsOn = false`
+refreshed from `readSettings` at `session_start`. In `session_start`, when
+`ctx.hasUI`, first resolve the key; **if there is no key, leave
+`usageCheckDone` false and return** (so a later logged-in session in the same
+process can still be nudged), then set `insightsOn =
+usageInsightsEnabled(process.env, readSettings(process.env))` and, when on and
+`!usageCheckDone`, set `usageCheckDone = true` and run the check (build the
+client from the session key, `fetchUsage` with a 10 s abort signal,
+`nudgeMessage`, `ctx.ui.notify` on a non-undefined message; swallow all errors).
+The signal is mandatory here: `fetchUsage` is unbounded without one and
+`session_start` must never hang on a stalled MCP request. Register
 
 ```ts
 pi.on("after_provider_response", (event) => {
-  if (!usageInsightsEnabled(process.env, readSettings(process.env))) return;
+  // Header first: cheap, and it identifies our provider without any I/O.
   const ms = parseQueueMs(event.headers);
-  if (ms !== undefined) queueStats = recordQueueWait(queueStats, ms);
+  if (ms === undefined || !insightsOn) return;
+  queueStats = recordQueueWait(queueStats, ms);
 });
 ```
 
-**The handler is registered unconditionally and gates each event on the current
-setting** — that is what makes an off-toggle take effect without a restart, and
-what the tests must assert. Pass `() => queueStats` into the `/lunaroute usage`
-path so the command always reads live totals.
+**The handler is registered unconditionally**, but it does **no file I/O per
+response**: `insightsOn` is a cached boolean refreshed at `session_start` and
+set by the settings applier whenever the `usageInsights` row changes (the
+applier in `createSettingChangeApplier` sets it alongside its other live
+apply). This makes an off-toggle take effect immediately without a restart and
+without re-registering the handler. The header check runs first so another
+provider's responses cost one object lookup. Pass `() => queueStats` into the
+`/lunaroute usage` path so the command always reads live totals.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
