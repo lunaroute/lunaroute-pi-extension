@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { LUNAROUTE_ENV_CONVERT_TOOLS, LUNAROUTE_ENV_IMAGE_TOOLS, LUNAROUTE_ENV_WEB_TOOLS, agentDirFromEnv } from "./lunaroute.js";
+import {
+  LUNAROUTE_DEFAULT_PROVIDER_RETRIES,
+  LUNAROUTE_ENV_CONVERT_TOOLS,
+  LUNAROUTE_ENV_IMAGE_TOOLS,
+  LUNAROUTE_ENV_WEB_TOOLS,
+  agentDirFromEnv,
+} from "./lunaroute.js";
 
 /** User-facing settings persisted at `<agentDir>/lunaroute.json` (kata bjy9).
  *
@@ -21,6 +27,8 @@ export interface LunarouteSettings {
   searchProvider: SearchProviderSetting;
   imageTools: Toggle;
   convertTools: Toggle;
+  /** Provider-level retries for model requests; 0 = off (kata z5y7). */
+  providerRetries: number;
 }
 
 export const DEFAULT_SETTINGS: LunarouteSettings = {
@@ -29,7 +37,11 @@ export const DEFAULT_SETTINGS: LunarouteSettings = {
   searchProvider: "server",
   imageTools: "on",
   convertTools: "on",
+  providerRetries: LUNAROUTE_DEFAULT_PROVIDER_RETRIES,
 };
+
+/** Upper bound for providerRetries — also the `/lunaroute` UI's last option. */
+export const PROVIDER_RETRIES_MAX = 5;
 
 /** Static v1 list; the server may support more, the TUI offers these. */
 export const SEARCH_PROVIDERS: readonly SearchProviderSetting[] = ["server", "brave", "exa", "kagi"] as const;
@@ -69,6 +81,20 @@ function parseSearchProvider(value: unknown): SearchProviderSetting {
     : DEFAULT_SETTINGS.searchProvider;
 }
 
+/** Integer number or digits-only string, clamped to [0, PROVIDER_RETRIES_MAX].
+ * Anything else keeps the default: a naive Number() would read "" / whitespace
+ * as 0 and silently disable retries on a malformed file. */
+function parseProviderRetries(value: unknown): number {
+  const n =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^\d+$/.test(value)
+        ? Number(value)
+        : NaN;
+  if (!Number.isInteger(n)) return LUNAROUTE_DEFAULT_PROVIDER_RETRIES;
+  return Math.min(PROVIDER_RETRIES_MAX, Math.max(0, n));
+}
+
 /** Read settings, tolerantly: missing file, invalid JSON, or invalid values
  * fall back per key. Extra keys are ignored. Never throws. */
 export function readSettings(env: NodeJS.ProcessEnv, io: SettingsIo = defaultIo): LunarouteSettings {
@@ -93,11 +119,12 @@ export function readSettings(env: NodeJS.ProcessEnv, io: SettingsIo = defaultIo)
     webTools: parseToggle(obj.webTools, DEFAULT_SETTINGS.webTools),
     imageTools: parseToggle(obj.imageTools, DEFAULT_SETTINGS.imageTools),
     convertTools: parseToggle(obj.convertTools, DEFAULT_SETTINGS.convertTools),
+    providerRetries: parseProviderRetries(obj.providerRetries),
     searchProvider: parseSearchProvider(obj.searchProvider),
   };
 }
 
-/** Atomically write the canonical three-key settings file (tmp + rename).
+/** Atomically write the canonical settings file (tmp + rename).
  * The file is ours: unknown keys read earlier are not preserved. */
 export function writeSettings(
   env: NodeJS.ProcessEnv,

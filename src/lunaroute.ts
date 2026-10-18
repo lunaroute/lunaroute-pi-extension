@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Api, Credential, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai";
+import type { Api, Credential, Model, OpenAICompletionsCompat, ProviderStreams, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import type { ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 export const LUNAROUTE_ENV_AGENT_DIR = "PI_CODING_AGENT_DIR";
@@ -447,4 +447,48 @@ export function readPersistedModels(env: NodeJS.ProcessEnv, classifiers = false)
 
 export function firstRunHint(): string {
   return "Run `/login lunaroute` to start using LunaRoute.";
+}
+
+/** Provider-level retries applied to one LunaRoute model request when the host
+ * leaves `retry.provider.maxRetries` unset. Mirrors the OpenAI SDK default
+ * that pi-ai's provider-retry helper reproduces, and stays small so a
+ * non-transient 429 can never stall a turn for long. */
+export const LUNAROUTE_DEFAULT_PROVIDER_RETRIES = 2;
+
+/** Wrap a built-in api so every LunaRoute request gets the provider-level
+ * retry that reads the server's `Retry-After`. pi-ai only forwards
+ * `maxRetries` when the user configured `retry.provider.maxRetries` (unset =
+ * 0), so the extension supplies a default scoped to this provider instead of
+ * mutating pi's global settings.
+ *
+ * pi routes BOTH `stream` and `streamSimple` through this handler, so callers
+ * passing options the simple path drops (`reasoningEffort`, `reasoningSummary`,
+ * `toolChoice`, `serviceTier`) must keep using the full stream. That list is a
+ * whitelist verified against pi 0.84.x; the agent path never sets any of them.
+ * ponytail: re-verify the list if a newer pi starts setting one on the agent path. */
+export function buildRetryingStreamSimple(
+  defaultRetries: number,
+  loadApi: (api: WireApi) => ProviderStreams,
+  getConfiguredRetries?: () => number,
+): NonNullable<ProviderConfig["streamSimple"]> {
+  return (model, context, options) => {
+    const api = loadApi(model.api as WireApi);
+    // Precedence: pi's explicit setting (incl. 0) > lunaroute.json > constant.
+    const maxRetries = options?.maxRetries ?? getConfiguredRetries?.() ?? defaultRetries;
+    const merged = { ...options, maxRetries };
+    // Those four fields only exist on the per-api option types, not on
+    // StreamOptions/SimpleStreamOptions.
+    const full = merged as {
+      reasoningEffort?: unknown;
+      reasoningSummary?: unknown;
+      toolChoice?: unknown;
+      serviceTier?: unknown;
+    };
+    const wantsFullApi =
+      full.reasoningEffort !== undefined ||
+      full.reasoningSummary !== undefined ||
+      full.toolChoice !== undefined ||
+      full.serviceTier !== undefined;
+    return wantsFullApi ? api.stream(model, context, merged) : api.streamSimple(model, context, merged);
+  };
 }

@@ -1,8 +1,11 @@
 import { VERSION, type ExtensionAPI, type ProviderConfig } from "@earendil-works/pi-coding-agent";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model, ProviderStreams } from "@earendil-works/pi-ai";
+import { openAICompletionsApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 import {
+  LUNAROUTE_DEFAULT_PROVIDER_RETRIES,
   LUNAROUTE_PROVIDER,
   SYSTEMONE_CLASSIFIER_API,
+  buildRetryingStreamSimple,
   buildAttributionHeaders,
   createSystemOneClassifier,
   firstRunHint,
@@ -17,6 +20,7 @@ import {
   type LunarouteClassifierImpl,
   type LunarouteModelConfig,
   type LunarouteProviderConfig,
+  type WireApi,
 } from "./lunaroute.js";
 import { lunarouteOAuth } from "./login.js";
 import { createRefreshModels } from "./discovery.js";
@@ -73,6 +77,13 @@ export function _setAdapterInstalledOverride(fn: (() => boolean) | undefined): v
   adapterInstalledOverride = fn;
 }
 
+/** The built-in transport for a wire format, resolved from the host's
+ * `pi-ai/compat` entry — the only pi-ai subpath the extension loader aliases to
+ * its own copy (a `./api/*` specifier would load the extension's peer copy). */
+export function loadBuiltinApi(api: WireApi): ProviderStreams {
+  return api === "openai-completions" ? openAICompletionsApi() : openAIResponsesApi();
+}
+
 export default function lunarouteExtension(pi: ExtensionAPI, version: string = VERSION): void {
   const sessionId = generateSessionId();
   const mcpDeps = { env: process.env, version, sessionId };
@@ -122,6 +133,14 @@ export default function lunarouteExtension(pi: ExtensionAPI, version: string = V
     api: resolveApi(process.env),
     authHeader: true,
     headers: buildAttributionHeaders(version, sessionId),
+    // Provider-level retries are the only retry that reads the gateway's
+    // Retry-After; pi leaves them off by default. Scoped to this provider so a
+    // user's global retry.provider.maxRetries still wins (including 0).
+    streamSimple: buildRetryingStreamSimple(
+      LUNAROUTE_DEFAULT_PROVIDER_RETRIES,
+      loadBuiltinApi,
+      () => readSettings(process.env).providerRetries,
+    ),
     // Re-register on login so a rotated key takes effect without restarting
     // Pi: dispose first (the adapter throws on a duplicate server name), then
     // register with the freshly obtained key — no getApiKeyForProvider race.

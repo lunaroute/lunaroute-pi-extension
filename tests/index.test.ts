@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { LUNAROUTE_PROVIDER, firstRunHint } from "../src/lunaroute.js";
 import { _resetImageToolsState } from "../src/image-tools.js";
 import { _resetConvertToolsState } from "../src/convert-tools.js";
-import { _resetAdapterNoticeState, _setAdapterInstalledOverride, ADAPTER_MIGRATION_NOTICE } from "../src/index.js";
+import { _resetAdapterNoticeState, _setAdapterInstalledOverride, ADAPTER_MIGRATION_NOTICE, loadBuiltinApi } from "../src/index.js";
 import lunarouteExtension from "../src/index.js";
 
 type SessionHandler = (event: unknown, ctx: FakeContext) => void | Promise<void>;
@@ -867,5 +867,28 @@ describe("classifier model registration (kata g2d6)", () => {
     lunarouteExtension(pi, "0.99.1");
     const [, config] = registerProvider.mock.calls[0] as [string, Record<string, unknown>];
     expect(config.models).toEqual([{ ...classifier, baseUrl: "https://gw.lunaroute.com/v1" }]);
+  });
+});
+
+// ============================================================================
+// provider-level retries (kata z5y7)
+// ============================================================================
+
+describe("provider retries", () => {
+  test("registers a streamSimple handler on the provider", () => {
+    const { pi, registerProvider } = fakePi();
+    lunarouteExtension(pi);
+    const config = registerProvider.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(typeof config.streamSimple).toBe("function");
+  });
+
+  test("loadBuiltinApi dispatches to the api matching the wire format", () => {
+    const responses = loadBuiltinApi("openai-responses");
+    const completions = loadBuiltinApi("openai-completions");
+    expect(typeof responses.streamSimple).toBe("function");
+    expect(typeof completions.streamSimple).toBe("function");
+    // Each factory call returns a fresh streams object — different objects prove
+    // the wire-format dispatch picked different modules.
+    expect(responses).not.toBe(completions);
   });
 });

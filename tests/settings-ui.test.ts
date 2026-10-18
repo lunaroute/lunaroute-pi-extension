@@ -99,20 +99,21 @@ beforeEach(() => {
 // ============================================================================
 
 describe("buildSettingsItems", () => {
-	test("five rows with the spec'd ids, labels, and value cycles", () => {
+	test("six rows with the spec'd ids, labels, and value cycles", () => {
 		const items = buildSettingsItems(DEFAULT_SETTINGS);
-		expect(items.map((i) => i.id)).toEqual(["mcp", "webTools", "imageTools", "convertTools", "searchProvider"]);
+		expect(items.map((i) => i.id)).toEqual(["mcp", "webTools", "imageTools", "convertTools", "searchProvider", "providerRetries"]);
 		expect(items[0]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[1]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[2]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[3]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[4]).toMatchObject({ currentValue: "server", values: ["server", "brave", "exa", "kagi"] });
+		expect(items[5]).toMatchObject({ currentValue: "2", values: ["0", "1", "2", "3", "4", "5"] });
 	});
 
 	test("reflects the current settings values", () => {
-		const settings: LunarouteSettings = { mcp: "off", webTools: "off", searchProvider: "kagi", imageTools: "on", convertTools: "on" };
+		const settings: LunarouteSettings = { mcp: "off", webTools: "off", searchProvider: "kagi", imageTools: "on", convertTools: "on", providerRetries: 2 };
 		const items = buildSettingsItems(settings);
-		expect(items.map((i) => i.currentValue)).toEqual(["off", "off", "on", "on", "kagi"]);
+		expect(items.map((i) => i.currentValue)).toEqual(["off", "off", "on", "on", "kagi", "2"]);
 	});
 });
 
@@ -778,5 +779,28 @@ describe("convertTools applier (kata zpzt)", () => {
 		} finally {
 			vi.unstubAllGlobals();
 		}
+	});
+});
+
+// ============================================================================
+// providerRetries (kata z5y7)
+// ============================================================================
+
+describe("providerRetries row", () => {
+	test("offers the full 0..5 cycle and reflects the current value", () => {
+		const items = buildSettingsItems({ ...DEFAULT_SETTINGS, providerRetries: 3 });
+		const row = items.find((i) => i.id === "providerRetries");
+		expect(row).toMatchObject({ currentValue: "3", values: ["0", "1", "2", "3", "4", "5"] });
+	});
+
+	test("applier writes a number and applies nothing (next request reads it)", async () => {
+		const { pi } = fakePi();
+		const write = vi.fn();
+		const ui = { notify: vi.fn() };
+		const applier = createSettingChangeApplier(pi, apierDeps({ write: write as never }), ui, async () => undefined, DEFAULT_SETTINGS);
+		await applier("providerRetries", "4");
+		expect(write).toHaveBeenCalledWith(ENV, { ...DEFAULT_SETTINGS, providerRetries: 4 });
+		expect(ui.notify).not.toHaveBeenCalled();
+		expect(pi.setActiveTools).not.toHaveBeenCalled();
 	});
 });
