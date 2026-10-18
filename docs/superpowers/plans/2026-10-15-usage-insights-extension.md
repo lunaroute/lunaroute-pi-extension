@@ -337,7 +337,7 @@ Expected: FAIL — unknown option / no handler.
 
 - [ ] **Step 3: Implement**
 
-In the `/lunaroute` handler add `if (sub === "usage") { await runUsageCommand(...); return; }` and extend the unknown-option hint. Add "Usage" to `ctx.ui.select`. `runUsageCommand` reads settings; if `usageInsightsEnabled` is false, notify the off message and return; look up the key; if absent, notify the login hint; otherwise build a client
+In the `/lunaroute` handler add `if (sub === "usage") { await runUsageCommand(...); return; }` and extend the unknown-option hint. Add "Usage" to `ctx.ui.select`. `runUsageCommand` **resolves the key first**: if absent, notify the login hint and return (this wins over the off message — without a key there is nothing to show). Then, if `usageInsightsEnabled` is false, notify the off message and return. Otherwise build a client
 
 ```ts
 createLunarouteMcpClient({

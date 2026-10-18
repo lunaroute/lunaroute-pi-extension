@@ -152,8 +152,11 @@ identities.
 
 - Add subcommand `usage` to the existing `/lunaroute` handler and a "Usage"
   entry to the bare menu (`src/settings-ui.ts`).
-- Logged out → "Run /login lunaroute".
-- Insights off → "Usage insights are off — enable in /lunaroute settings."
+- **Login is checked first.** Logged out → "Run /login lunaroute" even when
+  insights are off (without a key there is nothing to show and login is the
+  blocking prerequisite).
+- Then, when logged in and insights off → "Usage insights are off — enable in
+  /lunaroute settings."
 - Otherwise call `get_usage` (bounded timeout) and render: plan + lanes,
   period, queued time, rejections, and the suggested action URL if any.
 - On MCP/network failure, fall back to session-local header stats: measured
