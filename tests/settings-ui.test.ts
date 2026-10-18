@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS, type LunarouteSettings } from "../src/settings.js";
 import {
 	buildSettingsItems,
 	createSettingChangeApplier,
+	runUsageCommand,
 	registerLunarouteSettingsCommand,
 	type SettingsCommandDeps,
 } from "../src/settings-ui.js";
@@ -500,7 +501,7 @@ describe("registerLunarouteSettingsCommand", () => {
 		select.mockResolvedValue("Settings");
 		(custom as ReturnType<typeof vi.fn>).mockImplementation(async () => {});
 		await options.handler("", ctx);
-		expect(select).toHaveBeenCalledWith("LunaRoute", ["Settings", "Refresh models"]);
+		expect(select).toHaveBeenCalledWith("LunaRoute", ["Settings", "Refresh models", "Usage"]);
 		expect(custom).toHaveBeenCalled();
 		expect(ctx.modelRegistry.refresh).not.toHaveBeenCalled();
 	});
@@ -802,5 +803,120 @@ describe("providerRetries row", () => {
 		expect(write).toHaveBeenCalledWith(ENV, { ...DEFAULT_SETTINGS, providerRetries: 4 });
 		expect(ui.notify).not.toHaveBeenCalled();
 		expect(pi.setActiveTools).not.toHaveBeenCalled();
+	});
+});
+
+// ============================================================================
+// /lunaroute usage (kata: usage insights)
+// ============================================================================
+
+describe("runUsageCommand", () => {
+	const DEPS: SettingsCommandDeps = { env: ENV, version: "0.6.0-test", sessionId: "s" };
+	const STATS = { requests: 2, totalMs: 120, maxMs: 100, lastMs: 20 };
+	const SNAPSHOT = {
+		plan: { id: "pro", name: "Pro", interactiveLanes: 4 },
+		period: { start: "2026-10-01T00:00:00Z", end: "2026-10-31T00:00:00Z" },
+		totals: { requests: 812, queuedMs: 482000, requestMs: 1900000, rejected: 3, rejectQueuedMs: 142000 },
+		status: "elevated" as const,
+	};
+
+	function ctxWith(key: string | undefined) {
+		const notify = vi.fn();
+		return {
+			ctx: {
+				ui: { notify },
+				modelRegistry: { getApiKeyForProvider: vi.fn(async () => key) },
+			},
+			notify,
+		};
+	}
+
+	function snapshotClient(snapshot: unknown) {
+		return () => ({
+			listTools: async () => [],
+			callTool: async () => ({ content: [{ type: "text", text: JSON.stringify(snapshot) }] }),
+		});
+	}
+
+	test("says off when insights are disabled, after the key check", async () => {
+		const { ctx, notify } = ctxWith("lr_key");
+		await runUsageCommand(
+			ctx,
+			{ ...DEPS, read: () => ({ ...DEFAULT_SETTINGS, usageInsights: "off" }) },
+			() => STATS,
+			snapshotClient(SNAPSHOT),
+		);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("off"), "info");
+	});
+
+	test("a missing key wins over the off message", async () => {
+		const { ctx, notify } = ctxWith(undefined);
+		await runUsageCommand(
+			ctx,
+			{ ...DEPS, read: () => ({ ...DEFAULT_SETTINGS, usageInsights: "off" }) },
+			() => STATS,
+			snapshotClient(SNAPSHOT),
+		);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/login lunaroute"), "info");
+		expect(notify.mock.calls[0][0]).not.toContain("insights are off");
+	});
+
+	test("reports the snapshot and the session stats", async () => {
+		const { ctx, notify } = ctxWith("lr_key");
+		await runUsageCommand(ctx, { ...DEPS, read: () => DEFAULT_SETTINGS }, () => STATS, snapshotClient(SNAPSHOT));
+		const text = notify.mock.calls[0][0] as string;
+		expect(text).toContain("Pro");
+		expect(text).toContain("4 lanes");
+		expect(text).toContain("3 rejected");
+		expect(text).toContain("this session: 2 requests");
+	});
+
+	test("falls back to session stats when the tool call fails", async () => {
+		const { ctx, notify } = ctxWith("lr_key");
+		await runUsageCommand(ctx, { ...DEPS, read: () => DEFAULT_SETTINGS }, () => STATS, () => ({
+			listTools: async () => [],
+			callTool: async () => {
+				throw new Error("HTTP 500");
+			},
+		}));
+		const text = notify.mock.calls[0][0] as string;
+		expect(text).toContain("usage unavailable");
+		expect(text).toContain("this session: 2 requests");
+	});
+});
+
+describe("/lunaroute usage routing", () => {
+	test("the subcommand is reachable and reports the login hint without a key", async () => {
+		const { pi } = fakePi();
+		registerLunarouteSettingsCommand(pi, { env: ENV, version: "0.6.0-test", sessionId: "s" });
+		const call = (pi.registerCommand as ReturnType<typeof vi.fn>).mock.calls[0] as [
+			string,
+			{ handler: (args: string, ctx: unknown) => Promise<void> },
+		];
+		const notify = vi.fn();
+		await call[1].handler("usage", {
+			hasUI: true,
+			mode: "tui",
+			modelRegistry: { getApiKeyForProvider: vi.fn(async () => undefined) },
+			ui: { notify, custom: vi.fn(), select: vi.fn() },
+		});
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/login lunaroute"), "info");
+	});
+
+	test("the bare menu offers Usage", async () => {
+		const { pi } = fakePi();
+		registerLunarouteSettingsCommand(pi, { env: ENV, version: "0.6.0-test", sessionId: "s" });
+		const call = (pi.registerCommand as ReturnType<typeof vi.fn>).mock.calls[0] as [
+			string,
+			{ handler: (args: string, ctx: unknown) => Promise<void> },
+		];
+		const select = vi.fn(async (_title: string, _options: string[]) => undefined as string | undefined);
+		await call[1].handler("", {
+			hasUI: true,
+			mode: "tui",
+			modelRegistry: { getApiKeyForProvider: vi.fn(async () => undefined) },
+			ui: { notify: vi.fn(), custom: vi.fn(), select },
+		});
+		expect(select.mock.calls[0][1]).toContain("Usage");
 	});
 });
