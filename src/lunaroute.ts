@@ -23,6 +23,7 @@ export const LUNAROUTE_ENV_MCP_URL = "LUNAROUTE_MCP_URL";
 export const LUNAROUTE_ENV_WEB_TOOLS = "LUNAROUTE_WEB_TOOLS";
 export const LUNAROUTE_ENV_IMAGE_TOOLS = "LUNAROUTE_IMAGE_TOOLS";
 export const LUNAROUTE_ENV_CONVERT_TOOLS = "LUNAROUTE_CONVERT_TOOLS";
+export const LUNAROUTE_ENV_USAGE_INSIGHTS = "LUNAROUTE_USAGE_INSIGHTS";
 
 // Production defaults — confirm against the deployed LunaRoute environment before release.
 export const DEFAULT_ROUTING_URL = "https://gw.lunaroute.com/v1";

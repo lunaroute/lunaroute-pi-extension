@@ -111,7 +111,7 @@ describe("buildSettingsItems", () => {
 	});
 
 	test("reflects the current settings values", () => {
-		const settings: LunarouteSettings = { mcp: "off", webTools: "off", searchProvider: "kagi", imageTools: "on", convertTools: "on", providerRetries: 2 };
+		const settings: LunarouteSettings = { mcp: "off", webTools: "off", searchProvider: "kagi", imageTools: "on", convertTools: "on", providerRetries: 2, usageInsights: "on" };
 		const items = buildSettingsItems(settings);
 		expect(items.map((i) => i.currentValue)).toEqual(["off", "off", "on", "on", "kagi", "2"]);
 	});
