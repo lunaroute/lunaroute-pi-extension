@@ -4,6 +4,8 @@ import {
 	_resetInsightsState,
 	emptyStats,
 	fetchUsage,
+	formatUsageReport,
+	nudgeMessage,
 	isInsightsOn,
 	parseQueueMs,
 	parseUsageSnapshot,
@@ -131,5 +133,62 @@ describe("fetchUsage", () => {
 			plan: { id: "pro", name: "Pro", interactiveLanes: null, backgroundLanes: null },
 		});
 		expect(parsed?.plan).toEqual({ id: "pro", name: "Pro" });
+	});
+});
+
+describe("formatUsageReport", () => {
+	const stats = { requests: 2, totalMs: 120, maxMs: 100, lastMs: 20 };
+
+	test("reports plan, lanes, period and queued totals", () => {
+		const text = formatUsageReport(VALID_SNAPSHOT, stats);
+		expect(text).toContain("Pro");
+		expect(text).toContain("4 lanes");
+		expect(text).toContain("8m 2s");
+		expect(text).toContain("3 rejected");
+		expect(text).toContain("this session: 2 requests, 120 ms queued, avg 60 ms, max 100 ms");
+	});
+
+	test("renders the status and the suggested action URL", () => {
+		const text = formatUsageReport(VALID_SNAPSHOT, stats);
+		expect(text).toContain("elevated");
+		expect(text).toContain("https://app.lunaroute.com/settings/billing");
+	});
+
+	test("falls back to session stats when the snapshot is missing", () => {
+		const text = formatUsageReport(undefined, stats);
+		expect(text).toContain("usage unavailable");
+		expect(text).toContain("this session: 2 requests, 120 ms queued, avg 60 ms, max 100 ms");
+	});
+
+	test("fallback with zero measured requests omits the average without NaN", () => {
+		const text = formatUsageReport(undefined, emptyStats());
+		expect(text).not.toContain("NaN");
+		expect(text).toContain("no queued responses measured");
+	});
+});
+
+describe("nudgeMessage", () => {
+	test("stays silent for ok and unknown", () => {
+		expect(nudgeMessage({ ...VALID_SNAPSHOT, status: "ok" })).toBeUndefined();
+		expect(nudgeMessage({ ...VALID_SNAPSHOT, status: "unknown" })).toBeUndefined();
+	});
+
+	test("prefers the server-authored message", () => {
+		expect(
+			nudgeMessage({
+				...VALID_SNAPSHOT,
+				status: "elevated",
+				suggestedAction: { kind: "add_lanes", message: "Add a lane" },
+			}),
+		).toBe("Add a lane");
+	});
+
+	test("falls back to a built-in message for elevated and saturated", () => {
+		expect(nudgeMessage({ ...VALID_SNAPSHOT, status: "elevated", suggestedAction: { kind: "none" } })).toContain(
+			"/lunaroute usage",
+		);
+		expect(nudgeMessage({ ...VALID_SNAPSHOT, status: "saturated", suggestedAction: undefined })).toContain(
+			"/lunaroute usage",
+		);
 	});
 });

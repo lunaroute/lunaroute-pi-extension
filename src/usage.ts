@@ -155,3 +155,63 @@ export async function fetchUsage(
 		return undefined;
 	}
 }
+
+// ============================================================================
+// Presentation
+// ============================================================================
+
+/** Compact duration: 482000 → "8m 2s", 1500 → "1s", 840 → "840 ms". */
+export function formatMs(ms: number): string {
+	if (ms >= 60_000) {
+		const minutes = Math.floor(ms / 60_000);
+		const seconds = Math.floor((ms % 60_000) / 1000);
+		return `${minutes}m ${seconds}s`;
+	}
+	if (ms >= 1000) return `${Math.floor(ms / 1000)}s`;
+	return `${ms} ms`;
+}
+
+/** One human-readable usage report for `/lunaroute usage`. Renders the plan,
+ * period, totals and status when a snapshot is available; always renders the
+ * session's own measured queueing, which is all we have when the server tool
+ * is unavailable. */
+export function formatUsageReport(snapshot: UsageSnapshot | undefined, stats: SessionQueueStats): string {
+	const lines: string[] = [];
+	if (!snapshot) {
+		lines.push("LunaRoute usage unavailable (server usage tool not reachable).");
+	} else {
+		const lanes = snapshot.plan.interactiveLanes;
+		const planLine = lanes === undefined ? `Plan: ${snapshot.plan.name}` : `Plan: ${snapshot.plan.name} — ${lanes} lanes`;
+		lines.push(planLine);
+		lines.push(
+			`Period: ${snapshot.period.start.slice(0, 10)} to ${snapshot.period.end.slice(0, 10)}`,
+		);
+		lines.push(
+			`${snapshot.totals.requests} requests — ${formatMs(snapshot.totals.queuedMs)} queued, ${snapshot.totals.rejected} rejected (${formatMs(snapshot.totals.rejectQueuedMs)} queued before rejection)`,
+		);
+		lines.push(`Status: ${snapshot.status}`);
+		if (snapshot.suggestedAction?.url) lines.push(`More: ${snapshot.suggestedAction.url}`);
+	}
+	if (stats.requests === 0) {
+		lines.push("this session: no queued responses measured");
+	} else {
+		const avg = Math.round(stats.totalMs / stats.requests);
+		lines.push(
+			`this session: ${stats.requests} requests, ${stats.totalMs} ms queued, avg ${avg} ms, max ${stats.maxMs} ms`,
+		);
+	}
+	return lines.join("\n");
+}
+
+const BUILTIN_NUDGE: Record<"elevated" | "saturated", string> = {
+	elevated: "LunaRoute is queueing your requests — run /lunaroute usage for details.",
+	saturated: "LunaRoute is queueing your requests heavily — run /lunaroute usage for details.",
+};
+
+/** The proactive notice text, or undefined when nothing should be shown.
+ * The server owns the wording when it supplies one. */
+export function nudgeMessage(snapshot: UsageSnapshot): string | undefined {
+	if (snapshot.status !== "elevated" && snapshot.status !== "saturated") return undefined;
+	const authored = snapshot.suggestedAction?.message;
+	return authored || BUILTIN_NUDGE[snapshot.status];
+}
