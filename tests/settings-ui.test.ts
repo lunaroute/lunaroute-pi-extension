@@ -9,6 +9,7 @@ import {
 	type SettingsCommandDeps,
 } from "../src/settings-ui.js";
 import { _resetImageToolsState, registerImageTools } from "../src/image-tools.js";
+import { _resetInsightsState, isInsightsOn } from "../src/usage.js";
 import { _resetConvertToolsState, registerConvertTools } from "../src/convert-tools.js";
 import { _resetWebToolsState, registerWebTools, type FetchLike } from "../src/web-tools.js";
 
@@ -100,21 +101,22 @@ beforeEach(() => {
 // ============================================================================
 
 describe("buildSettingsItems", () => {
-	test("six rows with the spec'd ids, labels, and value cycles", () => {
+	test("seven rows with the spec'd ids, labels, and value cycles", () => {
 		const items = buildSettingsItems(DEFAULT_SETTINGS);
-		expect(items.map((i) => i.id)).toEqual(["mcp", "webTools", "imageTools", "convertTools", "searchProvider", "providerRetries"]);
+		expect(items.map((i) => i.id)).toEqual(["mcp", "webTools", "imageTools", "convertTools", "searchProvider", "usageInsights", "providerRetries"]);
 		expect(items[0]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[1]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[2]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[3]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[4]).toMatchObject({ currentValue: "server", values: ["server", "brave", "exa", "kagi"] });
-		expect(items[5]).toMatchObject({ currentValue: "2", values: ["0", "1", "2", "3", "4", "5"] });
+		expect(items[5]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
+		expect(items[6]).toMatchObject({ currentValue: "2", values: ["0", "1", "2", "3", "4", "5"] });
 	});
 
 	test("reflects the current settings values", () => {
 		const settings: LunarouteSettings = { mcp: "off", webTools: "off", searchProvider: "kagi", imageTools: "on", convertTools: "on", providerRetries: 2, usageInsights: "on" };
 		const items = buildSettingsItems(settings);
-		expect(items.map((i) => i.currentValue)).toEqual(["off", "off", "on", "on", "kagi", "2"]);
+		expect(items.map((i) => i.currentValue)).toEqual(["off", "off", "on", "on", "kagi", "on", "2"]);
 	});
 });
 
@@ -918,5 +920,44 @@ describe("/lunaroute usage routing", () => {
 			ui: { notify: vi.fn(), custom: vi.fn(), select },
 		});
 		expect(select.mock.calls[0][1]).toContain("Usage");
+	});
+});
+
+describe("usageInsights setting row", () => {
+	test("the settings list offers the usageInsights toggle", () => {
+		expect(buildSettingsItems(DEFAULT_SETTINGS).map((i) => i.id)).toContain("usageInsights");
+	});
+
+	test("toggling the row updates the shared gate immediately", async () => {
+		_resetInsightsState();
+		const { pi } = fakePi();
+		const ui = { notify: vi.fn() };
+		const applier = createSettingChangeApplier(
+			pi,
+			{ env: ENV, version: "t", sessionId: "s", write: vi.fn() as never },
+			ui,
+			async () => undefined,
+			DEFAULT_SETTINGS,
+		);
+		await applier("usageInsights", "off");
+		expect(isInsightsOn()).toBe(false);
+		await applier("usageInsights", "on");
+		expect(isInsightsOn()).toBe(true);
+	});
+
+	test("the env override still wins over a live on-toggle", async () => {
+		_resetInsightsState();
+		vi.stubEnv("LUNAROUTE_USAGE_INSIGHTS", "off");
+		const { pi } = fakePi();
+		const applier = createSettingChangeApplier(
+			pi,
+			{ env: process.env, version: "t", sessionId: "s", write: vi.fn() as never },
+			{ notify: vi.fn() },
+			async () => undefined,
+			{ ...DEFAULT_SETTINGS, usageInsights: "off" },
+		);
+		await applier("usageInsights", "on");
+		expect(isInsightsOn()).toBe(false);
+		vi.unstubAllEnvs();
 	});
 });

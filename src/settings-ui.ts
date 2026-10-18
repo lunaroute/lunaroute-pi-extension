@@ -7,7 +7,7 @@ import { PROVIDER_RETRIES_MAX, readSettings, settingsPath, writeSettings, usageI
 import { getRegisteredImageToolNames, invalidateImageToolRegistrations, registerImageTools } from "./image-tools.js";
 import { getRegisteredConvertToolNames, invalidateConvertToolRegistrations, registerConvertTools } from "./convert-tools.js";
 import { getRegisteredWebToolNames, createLunarouteMcpClient, registerWebTools, type LunarouteMcpClient } from "./web-tools.js";
-import { emptyStats, fetchUsage, formatUsageReport, type SessionQueueStats } from "./usage.js";
+import { emptyStats, fetchUsage, formatUsageReport, setInsightsOn, type SessionQueueStats } from "./usage.js";
 
 /** The `/lunaroute` settings command (kata bjy9): a pi-native SettingsList
  * TUI for MCP on/off, web tools on/off, and the default search provider.
@@ -65,6 +65,13 @@ export function buildSettingsItems(settings: LunarouteSettings): SettingItem[] {
 			values: ["server", "brave", "exa", "kagi"],
 		},
 		{
+			id: "usageInsights",
+			label: "Usage insights",
+			description: "Queue/usage messages and /lunaroute usage",
+			currentValue: settings.usageInsights,
+			values: ["on", "off"],
+		},
+		{
 			id: "providerRetries",
 			label: "Provider retries (429)",
 			description: "Retries for model requests, honoring LunaRoute's Retry-After; 0 = off",
@@ -112,6 +119,12 @@ export function createSettingChangeApplier(
 		// Both are read at call time: searchProvider by web_search, providerRetries
 		// by the model-request stream — no registration to swap.
 		if (id === "searchProvider" || id === "providerRetries") return;
+		if (id === "usageInsights") {
+			// Recompute through the decision function: the env escape hatch must
+			// stay authoritative over a live "on".
+			setInsightsOn(usageInsightsEnabled(deps.env, settings));
+			return;
+		}
 		try {
 			if (id === "webTools") await applyWebTools(pi, deps, ui, getApiKey, settings, newValue === "on");
 			if (id === "imageTools") {

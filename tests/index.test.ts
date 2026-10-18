@@ -7,7 +7,14 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { LUNAROUTE_PROVIDER, firstRunHint } from "../src/lunaroute.js";
 import { _resetImageToolsState } from "../src/image-tools.js";
 import { _resetConvertToolsState } from "../src/convert-tools.js";
-import { _resetAdapterNoticeState, _setAdapterInstalledOverride, ADAPTER_MIGRATION_NOTICE, loadBuiltinApi } from "../src/index.js";
+import {
+  _getUsageStats,
+  _resetAdapterNoticeState,
+  _resetUsageState,
+  _setAdapterInstalledOverride,
+  ADAPTER_MIGRATION_NOTICE,
+  loadBuiltinApi,
+} from "../src/index.js";
 import lunarouteExtension from "../src/index.js";
 
 type SessionHandler = (event: unknown, ctx: FakeContext) => void | Promise<void>;
@@ -891,4 +898,135 @@ describe("provider retries", () => {
     // the wire-format dispatch picked different modules.
     expect(responses).not.toBe(completions);
   });
+});
+
+// ============================================================================
+// Usage insights (queue header collection + once-per-process check)
+// ============================================================================
+
+describe("usage insights wiring", () => {
+	let agentDir: string;
+
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		vi.unstubAllGlobals();
+		_resetAdapterNoticeState();
+		_resetUsageState();
+		agentDir = mkdtempSync(join(tmpdir(), "lr-usage-"));
+		vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+	});
+
+	/** JSON-RPC stub: answers initialize/notifications and get_usage. */
+	function usageFetch(snapshot: unknown) {
+		return vi.fn(async (_url: string, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body)) as { id?: number; method: string; params?: { name?: string } };
+			let result: unknown = {};
+			if (body.method === "tools/call" && body.params?.name === "get_usage") {
+				result = { content: [{ type: "text", text: JSON.stringify(snapshot) }] };
+			}
+			return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		});
+	}
+
+	const OK_SNAPSHOT = {
+		plan: { id: "pro", name: "Pro", interactiveLanes: 4 },
+		period: { start: "2026-10-01T00:00:00Z", end: "2026-10-31T00:00:00Z" },
+		totals: { requests: 1, queuedMs: 0, requestMs: 1000, rejected: 0, rejectQueuedMs: 0 },
+		status: "ok",
+	};
+	const SATURATED_SNAPSHOT = { ...OK_SNAPSHOT, status: "saturated" };
+
+	const settle = () => new Promise((r) => setTimeout(r, 25));
+
+	function keyCtx() {
+		return fakeContext({ modelRegistry: { getApiKeyForProvider: () => Promise.resolve("lr_key") } });
+	}
+
+	test("accumulates queue waits from response headers", async () => {
+		vi.stubGlobal("fetch", usageFetch(OK_SNAPSHOT));
+		const { pi, handlers } = fakePi();
+		lunarouteExtension(pi);
+		await handlers.get("session_start")?.({}, keyCtx());
+		handlers.get("after_provider_response")?.({ status: 200, headers: { "x-lunaroute-queue-ms": "100" } }, keyCtx());
+		handlers.get("after_provider_response")?.({ status: 200, headers: { "x-lunaroute-queue-ms": "20" } }, keyCtx());
+		handlers.get("after_provider_response")?.({ status: 200, headers: { "content-type": "text/event-stream" } }, keyCtx());
+		expect(_getUsageStats()).toEqual({ requests: 2, totalMs: 120, maxMs: 100, lastMs: 20 });
+	});
+
+	test("ignores response events when usage insights are off", async () => {
+		writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ usageInsights: "off" }));
+		vi.stubGlobal("fetch", usageFetch(OK_SNAPSHOT));
+		const { pi, handlers } = fakePi();
+		lunarouteExtension(pi);
+		await handlers.get("session_start")?.({}, keyCtx());
+		handlers.get("after_provider_response")?.({ status: 200, headers: { "x-lunaroute-queue-ms": "100" } }, keyCtx());
+		expect(_getUsageStats()).toEqual({ requests: 0, totalMs: 0, maxMs: 0, lastMs: 0 });
+	});
+
+	test("runs the proactive check at most once per process", async () => {
+		writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ mcp: "off" }));
+		const fetchMock = usageFetch(OK_SNAPSHOT);
+		vi.stubGlobal("fetch", fetchMock);
+		const { pi, handlers } = fakePi();
+		lunarouteExtension(pi);
+		await handlers.get("session_start")?.({}, keyCtx());
+		await handlers.get("session_start")?.({}, keyCtx());
+		await settle();
+		const calls = fetchMock.mock.calls.filter(
+			([, init]) => (JSON.parse(String(init?.body)) as { method: string }).method === "tools/call",
+		);
+		expect(calls).toHaveLength(1);
+	});
+
+	test("a logged-out session does not consume the check", async () => {
+		writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ mcp: "off" }));
+		const fetchMock = usageFetch(SATURATED_SNAPSHOT);
+		vi.stubGlobal("fetch", fetchMock);
+		const { pi, handlers } = fakePi();
+		lunarouteExtension(pi);
+		await handlers.get("session_start")?.({}, fakeContext()); // no key
+		await handlers.get("session_start")?.({}, keyCtx());
+		await settle();
+		const calls = fetchMock.mock.calls.filter(
+			([, init]) => (JSON.parse(String(init?.body)) as { method: string }).method === "tools/call",
+		);
+		expect(calls).toHaveLength(1);
+	});
+
+	test("notifies for saturated and stays silent for ok", async () => {
+		writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ mcp: "off" }));
+		const cases: Array<[unknown, boolean]> = [
+			[OK_SNAPSHOT, false],
+			[SATURATED_SNAPSHOT, true],
+			[{ ...OK_SNAPSHOT, status: "unknown" }, false],
+		];
+		for (const [snapshot, expected] of cases) {
+			_resetUsageState();
+			const fetchMock = usageFetch(snapshot);
+			vi.stubGlobal("fetch", fetchMock);
+			const { pi, handlers } = fakePi();
+			lunarouteExtension(pi);
+			const ctx = keyCtx();
+			await handlers.get("session_start")?.({}, ctx);
+			await settle();
+			expect((ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.length > 0).toBe(expected);
+		}
+	});
+
+	test("the mcp master switch off does not disable usage insights", async () => {
+		writeFileSync(join(agentDir, "lunaroute.json"), JSON.stringify({ mcp: "off" }));
+		const fetchMock = usageFetch(SATURATED_SNAPSHOT);
+		vi.stubGlobal("fetch", fetchMock);
+		const { pi, handlers } = fakePi();
+		lunarouteExtension(pi);
+		await handlers.get("session_start")?.({}, keyCtx());
+		await settle();
+		const calls = fetchMock.mock.calls.filter(
+			([, init]) => (JSON.parse(String(init?.body)) as { method: string }).method === "tools/call",
+		);
+		expect(calls).toHaveLength(1);
+	});
 });
