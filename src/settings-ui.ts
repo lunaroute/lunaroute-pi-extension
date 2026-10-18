@@ -62,7 +62,7 @@ export function buildSettingsItems(settings: LunarouteSettings): SettingItem[] {
 			label: "Search provider",
 			description: "Default provider for web_search; the model can still override per call",
 			currentValue: settings.searchProvider,
-			values: ["server", "brave", "exa", "kagi"],
+			values: ["server", "brave", "exa", "kagi", "youcom"],
 		},
 		{
 			id: "usageInsights",

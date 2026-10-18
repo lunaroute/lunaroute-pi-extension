@@ -20,7 +20,7 @@ import {
 
 export type Toggle = "on" | "off";
 /** `server` = omit the provider argument; the LunaRoute server default wins. */
-export type SearchProviderSetting = "server" | "brave" | "exa" | "kagi";
+export type SearchProviderSetting = "server" | "brave" | "exa" | "kagi" | "youcom";
 
 export interface LunarouteSettings {
   mcp: Toggle;
@@ -48,7 +48,7 @@ export const DEFAULT_SETTINGS: LunarouteSettings = {
 export const PROVIDER_RETRIES_MAX = 5;
 
 /** Static v1 list; the server may support more, the TUI offers these. */
-export const SEARCH_PROVIDERS: readonly SearchProviderSetting[] = ["server", "brave", "exa", "kagi"] as const;
+export const SEARCH_PROVIDERS: readonly SearchProviderSetting[] = ["server", "brave", "exa", "kagi", "youcom"] as const;
 
 /** Concrete provider sent to the MCP tool; undefined = server default. */
 export type ConcreteSearchProvider = Exclude<SearchProviderSetting, "server">;

@@ -108,7 +108,7 @@ describe("buildSettingsItems", () => {
 		expect(items[1]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[2]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[3]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
-		expect(items[4]).toMatchObject({ currentValue: "server", values: ["server", "brave", "exa", "kagi"] });
+		expect(items[4]).toMatchObject({ currentValue: "server", values: ["server", "brave", "exa", "kagi", "youcom"] });
 		expect(items[5]).toMatchObject({ currentValue: "on", values: ["on", "off"] });
 		expect(items[6]).toMatchObject({ currentValue: "2", values: ["0", "1", "2", "3", "4", "5"] });
 	});
