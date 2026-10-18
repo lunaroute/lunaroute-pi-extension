@@ -172,8 +172,9 @@ identities.
   check → silent.
 - Usage collection never blocks or fails a request.
 - Off suppresses the session-start call and all usage data retrieval.
-  `/lunaroute usage` still runs but prints only "Usage insights are off —
-  enable in /lunaroute settings." so the toggle is discoverable.
+  `/lunaroute usage` still runs: when **logged in** it prints only "Usage
+  insights are off — enable in /lunaroute settings." so the toggle is
+  discoverable; when **logged out** the login hint wins (see section E).
 
 ## Testing
 
