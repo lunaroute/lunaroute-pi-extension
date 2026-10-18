@@ -406,8 +406,12 @@ and in `createSettingChangeApplier`, handle the row explicitly so the cached
 gate updates live:
 
 ```ts
-if (id === "usageInsights") { setInsightsOn(newValue === "on"); return; }
+if (id === "usageInsights") { setInsightsOn(usageInsightsEnabled(deps.env, settings)); return; }
 ```
+
+Recompute through `usageInsightsEnabled` rather than `newValue === "on"`: the
+applier has already merged `newValue` into `settings`, and the env override must
+still win (selecting "on" while `LUNAROUTE_USAGE_INSIGHTS=off` stays disabled).
 
 (place it beside the `searchProvider` early return — both are pure state
 updates with no tool re-registration).
