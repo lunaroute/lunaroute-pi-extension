@@ -77,10 +77,12 @@ is minimal and the aggregate tool already captures rejections).
 
 One read-only tool on the hosted MCP server, self-scoped to the calling key's
 user/org. Reuses the existing usage query. Not cached in v1 — it is one
-`(org_id, user_id, request_timestamp)` aggregate, called on demand and at most
-once per process. If it proves slow, add a cache keyed by the authenticated
-`(org_id, user_id)` only — request parameters never key it, and no entry is
-shared across identities.
+`(org_id, user_id, request_timestamp)` aggregate. **Cadence:** the proactive
+check calls it at most once per process; `/lunaroute usage` calls it on every
+invocation (that is the user asking, so an aggregate each time is intended).
+If it proves slow, add a cache keyed by the authenticated `(org_id, user_id)`
+only — request parameters never key it, and no entry is shared across
+identities.
 
 ```json
 {

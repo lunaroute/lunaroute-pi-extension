@@ -119,6 +119,7 @@ git commit -m "feat(usage): add usageInsights setting"
   - `interface SessionQueueStats { requests: number; totalMs: number; maxMs: number; lastMs: number }`
   - `emptyStats(): SessionQueueStats`
   - `recordQueueWait(stats: SessionQueueStats, ms: number): SessionQueueStats` (returns a new object).
+  - `setInsightsOn(on: boolean): void` / `isInsightsOn(): boolean` / `_resetInsightsState(): void` — the process-wide cached gate both `index.ts` and the settings applier share, so no file I/O happens per provider response.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -159,7 +160,7 @@ Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement `src/usage.ts`**
 
-`parseQueueMs`: lowercase-lookup the header, parse with a strict integer regex (`/^\d+$/`), reject values above a sane ceiling (use `60 * 60 * 1000` — one hour; anything larger is corrupt). `recordQueueWait` returns a fresh object. Keep types exported.
+`parseQueueMs`: lowercase-lookup the header, parse with a strict integer regex (`/^\d+$/`), reject values above a sane ceiling (use `60 * 60 * 1000` — one hour; anything larger is corrupt). `recordQueueWait` returns a fresh object. Keep types exported. The gate is a module-level `let insightsOn = false` with the three exported accessors (default off until the first `session_start` or settings write sets it).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -372,6 +373,7 @@ git commit -m "feat(usage): add /lunaroute usage command and menu entry"
 
 ```ts
 it("ignores response events when usage insights are off", async () => { /* handler registered, settings off → stats unchanged */ });
+it("toggling the usageInsights row updates the gate immediately", async () => { /* applyApplier("usageInsights","off") → isInsightsOn() false; then "on" → true */ });
 it("accumulates queue waits from response headers", async () => { /* two events → stats updated */ });
 it("runs the proactive check at most once per process", async () => { /* two session_starts → one notify */ });
 it("stays silent for ok/unknown/off", async () => { /* no notify */ });
@@ -392,15 +394,24 @@ Expected: FAIL.
 { id: "usageInsights", label: "Usage insights", description: "Queue/usage messages and /lunaroute usage", currentValue: settings.usageInsights, values: ["on", "off"] },
 ```
 
+and in `createSettingChangeApplier`, handle the row explicitly so the cached
+gate updates live:
+
+```ts
+if (id === "usageInsights") { setInsightsOn(newValue === "on"); return; }
+```
+
+(place it beside the `searchProvider` early return — both are pure state
+updates with no tool re-registration).
+
 `index.ts`: add a module-level `usageCheckDone = false` (process-scoped, per
 spec), a `let queueStats = emptyStats()` that is **reset to `emptyStats()` at
 the top of every `session_start`** — session stats are per session even though
-the proactive check is per process — and a cached `let insightsOn = false`
-refreshed from `readSettings` at `session_start`. In `session_start`, when
+the proactive check is per process. In `session_start`, when
 `ctx.hasUI`, first resolve the key; **if there is no key, leave
 `usageCheckDone` false and return** (so a later logged-in session in the same
-process can still be nudged), then set `insightsOn =
-usageInsightsEnabled(process.env, readSettings(process.env))` and, when on and
+process can still be nudged), then `setInsightsOn(
+usageInsightsEnabled(process.env, readSettings(process.env)))` and, when on and
 `!usageCheckDone`, set `usageCheckDone = true` and run the check (build the
 client from the session key, `fetchUsage` with a 10 s abort signal,
 `nudgeMessage`, `ctx.ui.notify` on a non-undefined message; swallow all errors).
@@ -411,16 +422,17 @@ The signal is mandatory here: `fetchUsage` is unbounded without one and
 pi.on("after_provider_response", (event) => {
   // Header first: cheap, and it identifies our provider without any I/O.
   const ms = parseQueueMs(event.headers);
-  if (ms === undefined || !insightsOn) return;
+  if (ms === undefined || !isInsightsOn()) return;
   queueStats = recordQueueWait(queueStats, ms);
 });
 ```
 
 **The handler is registered unconditionally**, but it does **no file I/O per
-response**: `insightsOn` is a cached boolean refreshed at `session_start` and
-set by the settings applier whenever the `usageInsights` row changes (the
-applier in `createSettingChangeApplier` sets it alongside its other live
-apply). This makes an off-toggle take effect immediately without a restart and
+response**: `isInsightsOn()` reads the module-level boolean from `src/usage.ts`,
+refreshed at `session_start` and updated by the settings applier when the
+`usageInsights` row changes (both sides import the same accessors — no callback
+plumbing). The header check runs first so another
+provider's responses cost one object lookup. This makes an off-toggle take effect immediately without a restart and
 without re-registering the handler. The header check runs first so another
 provider's responses cost one object lookup. Pass `() => queueStats` into the
 `/lunaroute usage` path so the command always reads live totals.
