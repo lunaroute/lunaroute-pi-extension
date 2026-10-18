@@ -294,7 +294,11 @@ git commit -m "feat(usage): format reports and select nudges"
 
 **Interfaces:**
 - Consumes: `usageInsightsEnabled`, `fetchUsage`, `formatUsageReport`, `createLunarouteMcpClient`, `resolveMcpUrl`, `buildAttributionHeaders`.
-- Produces: `runUsageCommand(ctx, deps, stats: SessionQueueStats, clientFactory?)` (exported for tests); `/lunaroute usage`; bare-menu option "Usage".
+- Produces: `runUsageCommand(ctx, deps, getQueueStats: () => SessionQueueStats, clientFactory?)` (exported for tests); `/lunaroute usage`; bare-menu option "Usage".
+
+The stats argument is a **live getter**, not a captured value: `queueStats` is
+reassigned on every provider response, so the command must read it at
+invocation time or it will render stale totals.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -319,12 +323,18 @@ In the `/lunaroute` handler add `if (sub === "usage") { await runUsageCommand(..
 ```ts
 createLunarouteMcpClient({
   url: resolveMcpUrl(deps.env),
-  headers: buildAttributionHeaders(deps.version, deps.sessionId),
+  headers: {
+    "LUNAROUTE-API-KEY": key, // the same auth header the web tools use
+    ...buildAttributionHeaders(deps.version, deps.sessionId),
+  },
   fetchImpl: fetch,
 })
 ```
 
-call `fetchUsage` with a `setTimeout`-aborted signal (~10 s), and notify `formatUsageReport(snapshot, sessionStats)`. The `clientFactory` parameter defaults to the real one so tests inject a fake; the session stats come from a value passed in (Task 6 owns the accumulator).
+call `fetchUsage` with a `setTimeout`-aborted signal (~10 s), and notify
+`formatUsageReport(snapshot, getQueueStats())` — calling the getter **after**
+the await, so the numbers include any responses that landed meanwhile. The
+`clientFactory` parameter defaults to the real one so tests inject a fake.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -356,7 +366,7 @@ git commit -m "feat(usage): add /lunaroute usage command and menu entry"
 `tests/index.test.ts` (reuse the existing `ExtensionAPI` fake):
 
 ```ts
-it("registers after_provider_response only when usage insights are on", async () => { /* on: handler present; off: absent */ });
+it("ignores response events when usage insights are off", async () => { /* handler registered, settings off → stats unchanged */ });
 it("accumulates queue waits from response headers", async () => { /* two events → stats updated */ });
 it("runs the proactive check at most once per process", async () => { /* two session_starts → one notify */ });
 it("stays silent for ok/unknown/off", async () => { /* no notify */ });
@@ -392,7 +402,10 @@ pi.on("after_provider_response", (event) => {
 });
 ```
 
-Pass `queueStats` into the `/lunaroute usage` path (a single mutable holder the settings command reads).
+**The handler is registered unconditionally and gates each event on the current
+setting** — that is what makes an off-toggle take effect without a restart, and
+what the tests must assert. Pass `() => queueStats` into the `/lunaroute usage`
+path so the command always reads live totals.
 
 - [ ] **Step 4: Run tests to verify they pass**
 

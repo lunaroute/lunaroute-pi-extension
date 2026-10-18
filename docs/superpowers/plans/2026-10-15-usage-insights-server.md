@@ -132,16 +132,19 @@ Expected: FAIL.
 ```sql
 SELECT
   COUNT(*),
-  COALESCE(SUM(queue_wait_us), 0),
-  COALESCE(SUM(latency_us), 0),
+  COALESCE(SUM(queue_wait_us), 0)::bigint,
+  COALESCE(SUM(latency_us), 0)::bigint,
   COUNT(*) FILTER (WHERE dispatch_timestamp IS NULL),
-  COALESCE(SUM(queue_wait_us) FILTER (WHERE dispatch_timestamp IS NULL), 0)
+  COALESCE(SUM(queue_wait_us) FILTER (WHERE dispatch_timestamp IS NULL), 0)::bigint
 FROM usage_events
 WHERE org_id = $1 AND user_id = $2
   AND request_timestamp >= $3 AND request_timestamp < $4;
 ```
 
-Convert µs → ms with integer division and saturating casts. `requests` counts all rows; `rejected` counts **all** gate-rejection rows (`dispatch_timestamp IS NULL`) regardless of whether `queue_wait_us` is NULL — the two columns must not disagree on what a rejection is. `reject_queued_ms` sums only the non-NULL waits (NULLs drop out of `SUM`).
+The `::bigint` casts matter: Postgres `SUM(bigint)` returns `numeric`, and a
+value outside `i64` fails SQLx decoding before Rust can clamp. With the cast
+the driver hands back `i64`; then convert µs → ms with integer division and
+`saturating` arithmetic so a corrupt huge sum cannot panic. `requests` counts all rows; `rejected` counts **all** gate-rejection rows (`dispatch_timestamp IS NULL`) regardless of whether `queue_wait_us` is NULL — the two columns must not disagree on what a rejection is. `reject_queued_ms` sums only the non-NULL waits (NULLs drop out of `SUM`).
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -179,7 +182,7 @@ Assert the exact JSON shape from the spec (keys `plan` / `period` / `totals` / `
 Run: `cargo test -p lunaroute-hosted usage_insights::`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement** the three functions. `plan_view` maps `tenant.plan` and the effective lane arms (`interactive_lanes: tenant.org_max_concurrent_requests`, `background_lanes`). Timestamp the period from the existing billing-period helper used by the usage read (do not invent a window).
+- [ ] **Step 3: Implement** the three functions. `plan_view` maps `tenant.plan` and both lane arms from the **effective entitlement view**: the resolver's tenant query already selects `e.interactive_lanes AS org_max_concurrent_requests` and `e.background_lanes AS background_lanes` from `org_effective_entitlements e` (`.../saas/tenant_resolver.rs:~1689-1694`), so `interactive_lanes = Some(tenant.org_max_concurrent_requests)` and `background_lanes = tenant.background_lanes` are the authoritative values — no separate entitlements lookup. A `None`/absent arm maps to `None`, which `classify_status` renders as `unknown`. Timestamp the period from the existing billing-period helper used by the usage read (do not invent a window).
 
 - [ ] **Step 4: Run to verify it passes**
 
