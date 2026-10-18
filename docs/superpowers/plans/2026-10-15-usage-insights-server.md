@@ -72,15 +72,21 @@ fn saturated_at_a_quarter_or_repeated_rejections() {
 }
 
 #[test]
-fn unknown_when_lanes_are_unset() {
-    // interactive_lanes = None -> Unknown
+fn unknown_when_interactive_lanes_are_unset() {
+    // interactive_lanes = None -> Unknown, regardless of background_lanes
+}
+
+#[test]
+fn background_lanes_never_affect_status() {
+    // interactive_lanes = Some(4), background_lanes = None -> normal classification
+    // interactive_lanes = Some(4), background_lanes = Some(0) -> normal classification
 }
 
 #[test]
 fn zero_request_time_cannot_divide_by_zero() { /* request_ms=0, queued_ms>0 -> not a panic; Elevated via any-queue rule */ }
 ```
 
-Boundaries — **the v1 contract, mirrored from the spec**: >= 10% → `Elevated`; >= 25% → `Saturated`; `rejected >= 3` → `Saturated`; `rejected == 1..=2` → at least `Elevated`; `request_ms == 0` with `queued_ms > 0` → `Elevated`; lanes `None` → `Unknown`. These constants are the server team's to retune; if they do, only these tests change.
+Boundaries — **the v1 contract, mirrored from the spec**: >= 10% → `Elevated`; >= 25% → `Saturated`; `rejected >= 3` → `Saturated`; `rejected == 1..=2` → at least `Elevated`; `request_ms == 0` with `queued_ms > 0` → `Elevated`. **Only `interactive_lanes` gates the status**: `None` → `Unknown`; `Some(0)` is a real limit (not unknown) and still classifies from the totals. `background_lanes` is informational in the payload and never changes `status` — it is a different pool. These constants are the server team's to retune; if they do, only these tests change.
 
 - [ ] **Step 2: Run tests to verify they fail**
 

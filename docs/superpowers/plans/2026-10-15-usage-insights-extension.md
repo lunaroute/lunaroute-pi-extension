@@ -207,6 +207,11 @@ it("returns undefined on malformed payloads", async () => {
   const client = fakeClient({ text: "not json" });
   await expect(fetchUsage(client)).resolves.toBeUndefined();
 });
+
+it("drops a malformed suggestedAction without rejecting the snapshot", () => {
+  expect(parseUsageSnapshot({ ...VALID_SNAPSHOT, suggestedAction: null })?.suggestedAction).toBeUndefined();
+  expect(parseUsageSnapshot({ ...VALID_SNAPSHOT, suggestedAction: { kind: "bogus", url: 1 } })?.suggestedAction).toBeUndefined();
+});
 ```
 
 Define `VALID_SNAPSHOT` from the spec payload and a `fakeClient({text})` whose `callTool` resolves `{ content: [{ type: "text", text }] }`.
@@ -218,7 +223,7 @@ Expected: FAIL — `fetchUsage` not exported.
 
 - [ ] **Step 3: Implement**
 
-`fetchUsage` calls `client.callTool("get_usage", {}, signal)` — the signal is **forwarded as the third argument**; `LunarouteMcpClient.callTool(name, args, signal?)` passes it to `rpc(...)` and on to `fetch`, so an aborted signal really cancels the in-flight request. If `signal` is omitted the call is unbounded; the command always supplies one. The function joins the `content[].text`, `JSON.parse`es it, and passes it through `parseUsageSnapshot`. Wrap the whole thing in try/catch and return `undefined` on any failure (including abort). `parseUsageSnapshot` checks: `status` is one of the four values, `plan.name`/`plan.id` are strings, `totals` numeric fields are finite numbers, `period` strings. Drop unknown extra fields.
+`fetchUsage` calls `client.callTool("get_usage", {}, signal)` — the signal is **forwarded as the third argument**; `LunarouteMcpClient.callTool(name, args, signal?)` passes it to `rpc(...)` and on to `fetch`, so an aborted signal really cancels the in-flight request. If `signal` is omitted the call is unbounded; the command always supplies one. The function joins the `content[].text`, `JSON.parse`es it, and passes it through `parseUsageSnapshot`. Wrap the whole thing in try/catch and return `undefined` on any failure (including abort). `parseUsageSnapshot` checks: `status` is one of the four values, `plan.name`/`plan.id` are strings, `totals` numeric fields are finite numbers, `period` strings. **`suggestedAction` is validated too, and never trusted blindly**: absent or `null` → omitted; if present it must be an object whose `kind` is one of the three values — otherwise the whole field is **dropped** (not the snapshot). `url` / `message` are kept only when strings. `nudgeMessage` and `formatUsageReport` must therefore treat `suggestedAction` as optional and read its fields defensively. Drop unknown extra fields.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
