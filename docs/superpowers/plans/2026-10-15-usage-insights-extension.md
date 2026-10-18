@@ -40,6 +40,10 @@
 - Consumes: nothing new.
 - Produces: `LunarouteSettings.usageInsights: Toggle`; `DEFAULT_SETTINGS.usageInsights = "on"`; `usageInsightsEnabled(env, settings): boolean`.
 
+`readSettings(env, io?)` in `src/settings.ts` already takes an optional second
+argument defaulting to real file I/O, so `readSettings(process.env)` is the
+correct production call (the two-argument form is only for tests).
+
 - [ ] **Step 1: Write the failing tests**
 
 Add to `tests/settings.test.ts`:
@@ -181,7 +185,7 @@ git commit -m "feat(usage): parse queue header and accumulate session stats"
 - Consumes: `LunarouteMcpClient` (from `src/web-tools.ts`).
 - Produces:
   - `type UsageStatus = "ok" | "elevated" | "saturated" | "unknown"`
-  - `interface UsageSnapshot { plan: { id: string; name: string; interactiveLanes?: number; backgroundLanes?: number }; period: { start: string; end: string }; totals: { requests: number; queuedMs: number; requestMs: number; rejected: number; rejectQueuedMs: number }; status: UsageStatus; suggestedAction?: { kind: "none" | "add_lanes" | "upgrade_plan"; url?: string; message?: string } }`
+  - `interface UsageSnapshot { plan: { id: string; name: string; interactiveLanes?: number; backgroundLanes?: number }; ... }` — **lane fields are absent when unavailable, never `null`.** The server omits them (`skip_serializing_if = "Option::is_none"`); `parseUsageSnapshot` accepts `undefined` and treats it as unknown. If a server ever sends `null`, the parser treats it as absent rather than rejecting the whole snapshot.
   - `parseUsageSnapshot(raw: unknown): UsageSnapshot | undefined` (pure, validates the shape)
   - `fetchUsage(client: LunarouteMcpClient, signal?: AbortSignal): Promise<UsageSnapshot | undefined>`
 

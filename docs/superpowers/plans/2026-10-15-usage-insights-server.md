@@ -49,7 +49,7 @@
 **Interfaces:**
 - Produces:
   - `pub(crate) struct UsageTotals { pub requests: i64, pub queued_ms: i64, pub request_ms: i64, pub rejected: i64, pub reject_queued_ms: i64 }`
-  - `pub(crate) struct PlanView { pub id: String, pub name: String, pub interactive_lanes: Option<u32>, pub background_lanes: Option<u32> }`
+  - `pub(crate) struct PlanView { pub id: String, pub name: String, pub interactive_lanes: Option<u32>, pub background_lanes: Option<u32> }` — when serialized, an unset lane field is **omitted**, not `null` (`#[serde(skip_serializing_if = "Option::is_none")]`), matching the extension's wire contract.
   - `pub(crate) enum UsageStatus { Ok, Elevated, Saturated, Unknown }` with `as_str()`
   - `pub(crate) fn classify_status(totals: &UsageTotals, plan: &PlanView) -> UsageStatus`
 
@@ -175,7 +175,7 @@ git commit -m "feat(mcp): read usage_events totals for the insights window"
 
 - [ ] **Step 1: Write the failing tests**
 
-Assert the exact JSON shape from the spec (keys `plan` / `period` / `totals` / `status` / `suggestedAction`, ms integers); `ok`/`unknown` produce `{"kind":"none"}` with no `url`; `elevated` → `add_lanes`, `saturated` → `upgrade_plan`, both with the billing URL and a `message`.
+Assert the exact JSON shape from the spec (keys `plan` / `period` / `totals` / `status` / `suggestedAction`, ms integers). Also assert the wire contract for an unknown entitlement: a `PlanView` with `interactive_lanes: None` serializes **without** that key (no `null`). `ok`/`unknown` produce `{"kind":"none"}` with no `url`; `elevated` → `add_lanes`, `saturated` → `upgrade_plan`, both with the billing URL and a `message`.
 
 - [ ] **Step 2: Run to verify it fails**
 
