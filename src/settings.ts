@@ -81,17 +81,19 @@ function parseToggle(value: unknown, fallback: Toggle): Toggle {
 
 /** Spellings a human or a model actually types for `youcom`. Without this,
  * `"you.com"` was dropped silently and searches went out on the server
- * default (kata ccbw). Canonical value on disk stays `youcom`. */
-const SEARCH_PROVIDER_ALIASES: Record<string, SearchProviderSetting> = {
-  you: "youcom",
-  "you.com": "youcom",
-};
+ * default (kata ccbw). Canonical value on disk stays `youcom`. A Map, not an
+ * object literal: `"constructor"` must fall back, not resolve to a prototype
+ * member and reach web_search as a bogus provider. */
+const SEARCH_PROVIDER_ALIASES = new Map<string, SearchProviderSetting>([
+  ["you", "youcom"],
+  ["you.com", "youcom"],
+]);
 
 function parseSearchProvider(value: unknown): SearchProviderSetting {
   if (typeof value !== "string") return DEFAULT_SETTINGS.searchProvider;
   const key = value.trim().toLowerCase();
   if ((SEARCH_PROVIDERS as readonly string[]).includes(key)) return key as SearchProviderSetting;
-  return SEARCH_PROVIDER_ALIASES[key] ?? DEFAULT_SETTINGS.searchProvider;
+  return SEARCH_PROVIDER_ALIASES.get(key) ?? DEFAULT_SETTINGS.searchProvider;
 }
 
 /** Integer number or digits-only string, clamped to [0, PROVIDER_RETRIES_MAX].
