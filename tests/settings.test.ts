@@ -93,6 +93,16 @@ describe("readSettings (tolerant reader)", () => {
     });
   });
 
+  test("search provider aliases normalize to youcom on read", () => {
+    for (const value of ["you", "youcom", "you.com", "You.com", " you "])
+      expect(readSettings(ENV, fakeIo({ [path]: JSON.stringify({ searchProvider: value }) })).searchProvider).toBe("youcom");
+  });
+
+  test("prototype keys are not aliases", () => {
+    for (const value of ["constructor", "toString", "__proto__"])
+      expect(readSettings(ENV, fakeIo({ [path]: JSON.stringify({ searchProvider: value }) })).searchProvider).toBe("server");
+  });
+
   test("extra keys are ignored on read", () => {
     const file = '{"mcp":"off","webTools":"on","searchProvider":"kagi","future":"x"}';
     expect(readSettings(ENV, fakeIo({ [path]: file })).searchProvider).toBe("kagi");
