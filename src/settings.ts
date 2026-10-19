@@ -79,10 +79,19 @@ function parseToggle(value: unknown, fallback: Toggle): Toggle {
   return value === "on" || value === "off" ? value : fallback;
 }
 
+/** Spellings a human or a model actually types for `youcom`. Without this,
+ * `"you.com"` was dropped silently and searches went out on the server
+ * default (kata ccbw). Canonical value on disk stays `youcom`. */
+const SEARCH_PROVIDER_ALIASES: Record<string, SearchProviderSetting> = {
+  you: "youcom",
+  "you.com": "youcom",
+};
+
 function parseSearchProvider(value: unknown): SearchProviderSetting {
-  return typeof value === "string" && (SEARCH_PROVIDERS as readonly string[]).includes(value)
-    ? (value as SearchProviderSetting)
-    : DEFAULT_SETTINGS.searchProvider;
+  if (typeof value !== "string") return DEFAULT_SETTINGS.searchProvider;
+  const key = value.trim().toLowerCase();
+  if ((SEARCH_PROVIDERS as readonly string[]).includes(key)) return key as SearchProviderSetting;
+  return SEARCH_PROVIDER_ALIASES[key] ?? DEFAULT_SETTINGS.searchProvider;
 }
 
 /** Integer number or digits-only string, clamped to [0, PROVIDER_RETRIES_MAX].

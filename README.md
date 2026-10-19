@@ -206,7 +206,8 @@ last known catalog stays in use. The settings UI, interactive mode only:
 - **Web search tools** — on/off. Off removes `web_search` / `web_fetch`
   immediately; on restores them without a restart.
 - **Search provider** — server / brave / exa / kagi / youcom. The default provider
-  used for every `web_search`; the model can still override it per call.
+  used for every `web_search`; the model can still override it per call. Hand-editing
+  `lunaroute.json` also accepts `you` and `you.com`; both are stored as `youcom`.
 - **Image tools** — on/off. Off removes `generate_image` / `edit_image` /
   `upload_image` immediately; on restores them without a restart.
 - **Convert tools** — on/off. Off removes `convert_document` immediately;
