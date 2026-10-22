@@ -134,4 +134,4 @@ be followed by a short note naming each item left open and why. The publish
 workflow enforces the line's presence and shape via `scripts/release-tag.mjs`
 before `npm publish` runs; a tag whose commit lacks a valid smoke line fails
 the release. Enforcement begins with the first release tagged after
-2026-10-22 (v0.18.0, the release that ships this gate).
+2026-10-22 (v0.18.1, the release that ships this gate).
