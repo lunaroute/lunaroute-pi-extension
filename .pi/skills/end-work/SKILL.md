@@ -79,3 +79,7 @@ the handoff so the next session isn't blocked by a stale-looking claim.
 Publishing is tag-driven and is **not** part of the close gate: `publish.yml` fires on
 `v*` tags and ships via npm Trusted Publishing (`npm run check` gates the tag). Bump
 the version and tag only when a release is actually intended.
+
+Before tagging, run `docs/smoke-checklist.md` against production and put the result in
+the tagged commit message as `smoke: <YYYY-MM-DD> <all-pass|exceptions>`. The publish
+gate fails closed without that line, so a release without it cannot ship.
