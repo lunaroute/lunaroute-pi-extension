@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import {
+  MAX_PROJECT_FILE_BYTES,
   PROJECT_FILE,
   clearProject,
   findProjectRoot,
@@ -67,12 +68,6 @@ describe("readProject", () => {
 });
 
 describe("readProject hardening", () => {
-  test("skips a file above the size cap without reading it", () => {
-    const io = { ...fakeIo([]), statSync: () => ({ size: 10_000_000 }), readFileSync: vi.fn(() => '{"project":"web"}') };
-    expect(readProject("/r", io)).toBeUndefined();
-    expect(io.readFileSync).not.toHaveBeenCalled();
-  });
-
   test("rejects bytes that are not valid UTF-8", () => {
     // Decoded leniently, invalid bytes become U+FFFD and can still parse as
     // JSON — the file must be rejected instead.
@@ -91,12 +86,28 @@ describe("readProject hardening", () => {
     expect(readProject("/r", io)).toBe("web");
   });
 
-  test("rejects a symlinked or non-regular project file", () => {
-    const files = { "/r/.lunaroute.json": '{"project":"web"}' };
-    const symlink = { ...fakeIo([], files), lstatSync: () => ({ size: 20, isFile: () => true, isSymbolicLink: () => true }) };
-    expect(readProject("/r", symlink)).toBeUndefined();
-    const device = { ...fakeIo([], files), lstatSync: () => ({ size: 0, isFile: () => false, isSymbolicLink: () => false }) };
-    expect(readProject("/r", device)).toBeUndefined();
+  test("rejects a symlinked project file", () => {
+    // A repo can commit .lunaroute.json as a symlink to /dev/zero or to a file
+    // outside the checkout; the read must not follow it.
+    const dir = mkdtempSync(join(tmpdir(), "ga6g-link-"));
+    try {
+      const target = join(dir, "real.json");
+      writeFileSync(target, '{"project":"web"}');
+      symlinkSync(target, join(dir, ".lunaroute.json"));
+      expect(readProject(dir)).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects an oversized project file without reading it into memory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ga6g-big-"));
+    try {
+      writeFileSync(join(dir, ".lunaroute.json"), `{"project":"web"}${" ".repeat(MAX_PROJECT_FILE_BYTES)}`);
+      expect(readProject(dir)).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

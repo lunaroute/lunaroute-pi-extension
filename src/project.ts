@@ -1,5 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import type { SettingsIo } from "./settings.js";
 
@@ -23,8 +34,6 @@ export interface ProjectIo extends SettingsIo {
   existsSync(path: string): boolean;
   /** Optional so test fakes stay small; the default implementation provides
    * all of them. */
-  statSync?(path: string): { size: number };
-  lstatSync?(path: string): { size: number; isFile(): boolean; isSymbolicLink(): boolean };
   readFileBytes?(path: string): Uint8Array;
   unlinkSync?(path: string): void;
 }
@@ -37,12 +46,32 @@ export const MAX_PROJECT_FILE_BYTES = 4096;
  * parse as JSON, so bytes are decoded strictly. */
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 
+/** Read at most MAX_PROJECT_FILE_BYTES from the opened descriptor.
+ *
+ * One open, one fstat, one bounded read: the checks and the read see the same
+ * inode, so replacing the path with a symlink or growing it after a check
+ * cannot turn the read into an unbounded one. O_NOFOLLOW refuses a symlinked
+ * file outright — a repo may ship one pointing at /dev/zero or outside the
+ * checkout, and devices report size 0. */
+function readProjectBytes(path: string): Uint8Array {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_PROJECT_FILE_BYTES) {
+      throw new Error("not a readable project file");
+    }
+    const buffer = Buffer.allocUnsafe(Math.min(stat.size, MAX_PROJECT_FILE_BYTES));
+    const n = readSync(fd, buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, n);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export const defaultProjectIo: ProjectIo = {
   existsSync,
-  statSync,
-  lstatSync,
   unlinkSync,
-  readFileBytes: (path) => readFileSync(path),
+  readFileBytes: readProjectBytes,
   readFileSync: (path) => readFileSync(path, "utf8"),
   writeFileSync,
   renameSync,
@@ -90,11 +119,6 @@ export function readProject(root: string, io: ProjectIo = defaultProjectIo): str
   let raw: string;
   let parsed: unknown;
   try {
-    // lstat, not stat: a repo can commit a symlink to /dev/zero or to a file
-    // outside the checkout, and a device reports size 0.
-    const link = io.lstatSync?.(target);
-    if (link && (link.isSymbolicLink() || !link.isFile())) return undefined;
-    if (io.statSync && io.statSync(target).size > MAX_PROJECT_FILE_BYTES) return undefined;
     raw = io.readFileBytes ? strictUtf8.decode(io.readFileBytes(target)) : io.readFileSync(target);
     if (raw.length > MAX_PROJECT_FILE_BYTES) return undefined;
     parsed = JSON.parse(raw);
