@@ -15,6 +15,9 @@ name: publish
 #   `npm publish --provenance`
 # because Trusted Publishing requires the package to already exist on npm.
 # After that, all publishes go through this workflow.
+#
+# No concurrency block: a cancelled publish can consume a version with no
+# release (the run may already have pushed to npm when cancelled).
 
 on:
   push:
@@ -28,22 +31,32 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # Node 24 bundles npm 11.x, which satisfies the Trusted Publishing
           # floor (npm CLI >= 11.5.1). Node 22 bundles npm 10.x, which does NOT.
           node-version: "24"
           cache: npm
+      # Gate: tag/version/lockfile agreement and the smoke line in the tagged
+      # commit message (see docs/smoke-checklist equivalent; enforced by
+      # scripts/release-tag.mjs). Fail closed before any spend or publish.
+      - name: Validate release metadata
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: node scripts/release-tag.mjs
       - run: npm ci
       # Gate: a tag that fails tests does not ship.
       - run: npm run check
       # Provenance attests against the public repo URL (package.json repository).
       # No --access flag: publishConfig.access in package.json ("public") wins,
       # so anyone can `pi install npm:@lunaroute/pi-extension`.
-      # Prerelease versions (0.3.2-beta.1) publish to the `beta` dist-tag;
-      # stable (0.3.2) to `latest`. npm refuses an implicit dist-tag on
+      # Prerelease versions (0.15.2-beta.1) publish to the `beta` dist-tag;
+      # stable (0.15.2) to `latest`. npm refuses an implicit dist-tag on
       # prerelease versions ("must specify a tag using --tag"), so pass it
       # explicitly either way.
       - run: |
