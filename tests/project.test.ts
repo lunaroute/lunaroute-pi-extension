@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,6 +101,22 @@ describe("readProject hardening", () => {
     }
   });
 
+  test("does not block on a FIFO project file", () => {
+    // Opening a FIFO read-only waits for a writer, and that wait blocks the
+    // event loop when it happens in-process — so prove it in a child with a
+    // hard timeout instead of hanging this suite.
+    const dir = mkdtempSync(join(tmpdir(), "ga6g-fifo-"));
+    try {
+      execFileSync("mkfifo", [join(dir, ".lunaroute.json")]);
+      const module = join(process.cwd(), "src/project.ts");
+      const script = `import { readProject } from ${JSON.stringify(module)}; process.stdout.write(String(readProject(${JSON.stringify(dir)})));`;
+      const out = execFileSync(process.execPath, ["--no-warnings", "-e", script], { timeout: 10_000, encoding: "utf8" });
+      expect(out).toBe("undefined");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("rejects an oversized project file without reading it into memory", () => {
     const dir = mkdtempSync(join(tmpdir(), "ga6g-big-"));
     try {
@@ -126,6 +143,19 @@ describe("writeProject", () => {
     const io = fakeIo([]);
     expect(() => writeProject("/r", "clear", io)).toThrow(/reserved/);
     expect(io.writeFileSync).not.toHaveBeenCalled();
+  });
+
+  test("removes its temp file when the write itself fails", () => {
+    const unlinkSync = vi.fn();
+    const io: ProjectIo = {
+      ...fakeIo([]),
+      writeFileSync: () => {
+        throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+      },
+      unlinkSync,
+    };
+    expect(() => writeProject("/r", "web", io)).toThrow("ENOSPC");
+    expect(unlinkSync).toHaveBeenCalledWith(`/r/${PROJECT_FILE}.test-uuid.tmp`);
   });
 
   test("propagates a rename failure and removes its temp file", () => {

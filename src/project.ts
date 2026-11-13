@@ -52,9 +52,10 @@ const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
  * inode, so replacing the path with a symlink or growing it after a check
  * cannot turn the read into an unbounded one. O_NOFOLLOW refuses a symlinked
  * file outright — a repo may ship one pointing at /dev/zero or outside the
- * checkout, and devices report size 0. */
+ * checkout, and devices report size 0. O_NONBLOCK keeps the open itself from
+ * waiting on a FIFO; fstat then rejects it. */
 function readProjectBytes(path: string): Uint8Array {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > MAX_PROJECT_FILE_BYTES) {
@@ -135,15 +136,16 @@ export function readProject(root: string, io: ProjectIo = defaultProjectIo): str
 function writeProjectFile(root: string, body: unknown, io: ProjectIo): void {
   const target = projectFilePath(root);
   const tmp = `${target}.${io.randomUUID()}.tmp`;
-  io.writeFileSync(tmp, `${JSON.stringify(body, null, 2)}\n`);
   try {
+    io.writeFileSync(tmp, `${JSON.stringify(body, null, 2)}\n`);
     io.renameSync(tmp, target);
   } catch (err) {
-    // Best-effort: a failed rename must not litter the repo with temp files.
+    // Best-effort: a failed write or rename must not litter the repo with
+    // temp files.
     try {
       io.unlinkSync?.(tmp);
     } catch {
-      /* the rename error is the one worth reporting */
+      /* the write/rename error is the one worth reporting */
     }
     throw err;
   }
