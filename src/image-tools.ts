@@ -5,6 +5,7 @@ import type { ExtensionAPI, ThemeColor, ToolDefinition } from "@earendil-works/p
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type TSchema } from "typebox";
 import { agentDirFromEnv, buildAttributionHeaders, resolveMcpUrl } from "./lunaroute.js";
+import { projectHeaders, readSessionProject } from "./project.js";
 import { createLunarouteMcpClient, delegatingClient, type FetchLike, type LunarouteMcpClient } from "./web-tools.js";
 import { DEFAULT_SETTINGS, imageToolsEnabled, type LunarouteSettings } from "./settings.js";
 
@@ -744,10 +745,11 @@ export async function registerImageTools(
 
 	const client = createLunarouteMcpClient({
 		url: resolveMcpUrl(deps.env),
-		headers: {
+		headers: () => ({
 			"LUNAROUTE-API-KEY": deps.key,
 			...buildAttributionHeaders(deps.version, deps.sessionId),
-		},
+			...projectHeaders(readSessionProject()),
+		}),
 		fetchImpl: deps.fetchImpl ?? (fetch as FetchLike),
 	});
 

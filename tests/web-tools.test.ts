@@ -1,6 +1,6 @@
 import { initTheme, type ExtensionAPI, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
@@ -22,6 +22,7 @@ import {
 	type LunarouteMcpClient,
 	type WebSearchPayload,
 } from "../src/web-tools.js";
+import { projectHeaders, setSessionRoot } from "../src/project.js";
 
 // ============================================================================
 // Helpers
@@ -775,5 +776,69 @@ describe("registerWebTools", () => {
 		await tool.execute("call-1", { query: "q" }, undefined, undefined);
 		const call = log.filter((e) => e.method === "tools/call").at(-1);
 		expect(call?.key).toBe("lr_key_B");
+	});
+});
+
+describe("createLunarouteMcpClient attribution headers", () => {
+	test("re-evaluates function headers on every rpc", async () => {
+		// Set/change/clear must reach an already-registered client: the tools
+		// are registered once and reuse this client for the whole session.
+		const seen: Record<string, string>[] = [];
+		const fetchImpl: FetchLike = async (_url, init) => {
+			const headers: Record<string, string> = {};
+			new Headers(init?.headers).forEach((v, k) => (headers[k] = v));
+			seen.push(headers);
+			return jsonResponse({ jsonrpc: "2.0", id: seen.length, result: { capabilities: {}, tools: [] } });
+		};
+		let project: string | undefined = "web";
+		const client = createLunarouteMcpClient({
+			url: "https://mcp.test/mcp",
+			headers: () => ({ ...projectHeaders(project) }),
+			fetchImpl,
+		});
+		await client.listTools();
+		project = "api";
+		await client.listTools();
+		project = undefined;
+		await client.listTools();
+		const toolCalls = seen.slice(-3);
+		expect(toolCalls[0]["lunaroute-project-id"]).toBe("web");
+		expect(toolCalls[1]["lunaroute-project-id"]).toBe("api");
+		expect(toolCalls[2]["lunaroute-project-id"]).toBeUndefined();
+	});
+});
+
+describe("registered tools follow the repo project file", () => {
+	test("set, change and clear reach an already-registered tool", async () => {
+		const root = mkdtempSync(join(tmpdir(), "ga6g-web-"));
+		const file = join(root, ".lunaroute.json");
+		const keys: (string | undefined)[] = [];
+		const fetchImpl: FetchLike = async (_url, init) => {
+			const body = JSON.parse(String(init?.body)) as { id: number; method: string };
+			keys.push(new Headers(init?.headers).get("lunaroute-project-id") ?? undefined);
+			const result =
+				body.method === "tools/list" ? { tools: [{ name: "web_search" }] }
+				: body.method === "tools/call" ? { content: [{ type: "text", text: "ok" }], isError: false }
+				: {};
+			return jsonResponse({ jsonrpc: "2.0", id: body.id, result });
+		};
+		try {
+			writeFileSync(file, '{"project":"web"}');
+			setSessionRoot(root);
+			const { pi, registered } = fakePi();
+			await registerWebTools(pi, { ...REG_DEPS, fetchImpl });
+			const tool = registered.find((t) => t.name === "web_search") as {
+				execute: (id: string, params: unknown, signal?: AbortSignal, onUpdate?: unknown) => Promise<unknown>;
+			};
+			await tool.execute("call-1", { query: "q" }, undefined, undefined);
+			writeFileSync(file, '{"project":"api"}');
+			await tool.execute("call-2", { query: "q" }, undefined, undefined);
+			rmSync(file);
+			await tool.execute("call-3", { query: "q" }, undefined, undefined);
+			expect(keys.slice(-3)).toEqual(["web", "api", undefined]);
+		} finally {
+			setSessionRoot(undefined);
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

@@ -3,6 +3,7 @@ import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
 import { LUNAROUTE_PROVIDER, buildAttributionHeaders, resolveMcpUrl } from "./lunaroute.js";
+import { projectHeaders, readSessionProject } from "./project.js";
 import { PROVIDER_RETRIES_MAX, readSettings, settingsPath, writeSettings, usageInsightsEnabled, type LunarouteSettings } from "./settings.js";
 import { getRegisteredImageToolNames, invalidateImageToolRegistrations, registerImageTools } from "./image-tools.js";
 import { getRegisteredConvertToolNames, invalidateConvertToolRegistrations, registerConvertTools } from "./convert-tools.js";
@@ -475,7 +476,11 @@ function defaultUsageClient(key: string, deps: SettingsCommandDeps): LunarouteMc
 	return createLunarouteMcpClient({
 		url: resolveMcpUrl(deps.env),
 		// Same auth header the first-class MCP tools use.
-		headers: { "LUNAROUTE-API-KEY": key, ...buildAttributionHeaders(deps.version, deps.sessionId) },
+		headers: () => ({
+			"LUNAROUTE-API-KEY": key,
+			...buildAttributionHeaders(deps.version, deps.sessionId),
+			...projectHeaders(readSessionProject()),
+		}),
 		fetchImpl: fetch,
 	});
 }

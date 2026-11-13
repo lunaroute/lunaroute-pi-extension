@@ -23,6 +23,7 @@ import {
   type LunarouteProviderConfig,
   type WireApi,
 } from "./lunaroute.js";
+import { projectHeaders, readSessionProject } from "./project.js";
 import { lunarouteOAuth } from "./login.js";
 import { createRefreshModels } from "./discovery.js";
 import { createLunarouteMcpClient, registerWebTools } from "./web-tools.js";
@@ -165,10 +166,11 @@ export default function lunarouteExtension(pi: ExtensionAPI, version: string = V
     try {
       const client = createLunarouteMcpClient({
         url: resolveMcpUrl(process.env),
-        headers: {
+        headers: () => ({
           "LUNAROUTE-API-KEY": key,
           ...buildAttributionHeaders(version, sessionId),
-        },
+          ...projectHeaders(readSessionProject()),
+        }),
         fetchImpl: fetch,
       });
       const snapshot = await fetchUsage(client, controller.signal);
