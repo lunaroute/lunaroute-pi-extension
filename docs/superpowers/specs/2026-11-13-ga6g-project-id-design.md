@@ -40,8 +40,16 @@ every request from that repo carry it.
 
 - A project value that can execute a shell command or expand an environment
   variable — see constraints.
-- A repo file that changes attribution silently for a user who cloned someone
-  else's checkout and never ran the command.
+
+## Trust model
+
+A committed `.lunaroute.json` takes effect automatically, for anyone who checks
+that repo out. That is the feature — a team shares one label by committing it —
+not an accident to be gated: the worst a hostile repo file can do is mislabel
+reporting, since the value is validated printable ASCII and never expanded or
+executed. The counterweight is visibility: `/lunaroute project` always reports
+the effective value *and* the file it came from, so a surprising label is one
+command away from being seen and one from being cleared.
 
 ## Constraints
 
@@ -90,8 +98,10 @@ every request from that repo carry it.
   rename. Write failures (read-only checkout, permissions) surface to the
   caller and are reported, never swallowed as success.
 - `validateProjectName(raw)`: trim, reject empty, reject >128 chars, reject
-  anything outside printable ASCII. One function, used by the command, by the
-  writer and by the readers.
+  anything outside printable ASCII, and reject the two reserved words `clear`
+  and `off` (case-insensitive) — the command grammar reserves them, so a
+  project could not be addressed again once set. One function, used by the
+  command, by the writer and by the readers, so the rule holds on every path.
 - `io` is injected (a small fs interface, same shape/spirit as `SettingsIo` —
   not `readSettings`/`writeSettings`, which are bound to the agent dir).
 
@@ -100,7 +110,11 @@ every request from that repo carry it.
 - **Model requests.** Extend the LunaRoute-only `streamSimple` wrapper
   (`buildRetryingStreamSimple`, `src/lunaroute.ts:470`) to merge
   `headers: {...options?.headers, "LUNAROUTE-PROJECT-ID": value}` from a
-  getter. Nothing enters provider config.
+  getter. Nothing enters provider config. With no project set the key is not
+  added at all — not set to `undefined` or `""` — so the outgoing headers stay
+  byte-identical to today. When it is set, drop any case-insensitive variant
+  already present in `options.headers` first, so exactly one spelling reaches
+  the wire.
 - **Session directory.** Capture `ctx.cwd` on `session_start`
   (`src/index.ts:266`) into a module-scoped value, refreshed on every
   session_start (resume/fork). Before the first session_start there is no
