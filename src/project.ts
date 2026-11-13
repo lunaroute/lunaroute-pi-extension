@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SettingsIo } from "./settings.js";
 
@@ -21,10 +21,24 @@ const RESERVED_NAMES = new Set(["clear", "off"]);
 
 export interface ProjectIo extends SettingsIo {
   existsSync(path: string): boolean;
+  /** Optional so test fakes stay small; the default implementation provides
+   * both. */
+  statSync?(path: string): { size: number };
+  unlinkSync?(path: string): void;
 }
+
+/** A project file is a two-field config, so anything larger is not one. Keeps
+ * a hostile repo from making every request read and parse megabytes. */
+export const MAX_PROJECT_FILE_BYTES = 4096;
+
+/** Node's utf8 decoder substitutes U+FFFD for undecodable bytes, which can
+ * still yield valid JSON; treat the file as unreadable instead. */
+const REPLACEMENT_CHAR = "\uFFFD";
 
 export const defaultProjectIo: ProjectIo = {
   existsSync,
+  statSync,
+  unlinkSync,
   readFileSync: (path) => readFileSync(path, "utf8"),
   writeFileSync,
   renameSync,
@@ -68,9 +82,14 @@ export function validateProjectName(raw: string): ProjectNameResult {
  * unreadable file, bad JSON, wrong shape, invalid name. Never throws — a
  * broken file must degrade to no header, not break requests. */
 export function readProject(root: string, io: ProjectIo = defaultProjectIo): string | undefined {
+  const target = projectFilePath(root);
+  let raw: string;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(io.readFileSync(projectFilePath(root)));
+    if (io.statSync && io.statSync(target).size > MAX_PROJECT_FILE_BYTES) return undefined;
+    raw = io.readFileSync(target);
+    if (raw.length > MAX_PROJECT_FILE_BYTES || raw.includes(REPLACEMENT_CHAR)) return undefined;
+    parsed = JSON.parse(raw);
   } catch {
     return undefined;
   }
@@ -85,7 +104,17 @@ function writeProjectFile(root: string, body: unknown, io: ProjectIo): void {
   const target = projectFilePath(root);
   const tmp = `${target}.${io.randomUUID()}.tmp`;
   io.writeFileSync(tmp, `${JSON.stringify(body, null, 2)}\n`);
-  io.renameSync(tmp, target);
+  try {
+    io.renameSync(tmp, target);
+  } catch (err) {
+    // Best-effort: a failed rename must not litter the repo with temp files.
+    try {
+      io.unlinkSync?.(tmp);
+    } catch {
+      /* the rename error is the one worth reporting */
+    }
+    throw err;
+  }
 }
 
 /** Throws on an invalid name; propagates write/rename failures (read-only

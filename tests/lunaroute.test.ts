@@ -1,8 +1,8 @@
-import { existsSync, rmSync } from "node:fs";
-import { describe, expect, test, vi } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { describe, expect, test, vi } from "vitest";
+import { writeFileSync } from "node:fs";
 import type { Api, Context, Model, ProviderStreams } from "@earendil-works/pi-ai";
 import {
   DEFAULT_API,
@@ -718,11 +718,15 @@ describe("buildRetryingStreamSimple", () => {
 
   test("shell-looking values reach the wire literally", () => {
     const api = fakeApi();
-    const pwned = "/tmp/ga6g-pwned";
-    rmSync(pwned, { force: true });
-    buildRetryingStreamSimple(2, loadApi(api), undefined, () => `!touch ${pwned}`)(model, context, undefined);
-    expect(api.streamSimple.mock.calls[0][2].headers["LUNAROUTE-PROJECT-ID"]).toBe(`!touch ${pwned}`);
-    expect(existsSync(pwned)).toBe(false);
+    const dir = mkdtempSync(join(tmpdir(), "ga6g-literal-"));
+    const pwned = join(dir, "pwned");
+    try {
+      buildRetryingStreamSimple(2, loadApi(api), undefined, () => `!touch ${pwned}`)(model, context, undefined);
+      expect(api.streamSimple.mock.calls[0][2].headers["LUNAROUTE-PROJECT-ID"]).toBe(`!touch ${pwned}`);
+      expect(existsSync(pwned)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("forwards the other options unchanged", () => {

@@ -63,6 +63,21 @@ describe("readProject", () => {
   });
 });
 
+describe("readProject hardening", () => {
+  test("skips a file above the size cap without reading it", () => {
+    const io = { ...fakeIo([]), statSync: () => ({ size: 10_000_000 }), readFileSync: vi.fn(() => '{"project":"web"}') };
+    expect(readProject("/r", io)).toBeUndefined();
+    expect(io.readFileSync).not.toHaveBeenCalled();
+  });
+
+  test("rejects a file that is not valid UTF-8 anywhere", () => {
+    // Node's utf8 decoder substitutes U+FFFD for invalid bytes, so a hostile
+    // file can stay parseable JSON while being undecodable.
+    const files = { "/r/.lunaroute.json": '{"project":"web","note":"\uFFFD"}' };
+    expect(readProject("/r", fakeIo([], files))).toBeUndefined();
+  });
+});
+
 describe("writeProject", () => {
   test("validates and writes atomically", () => {
     const io = fakeIo([]);
@@ -80,14 +95,17 @@ describe("writeProject", () => {
     expect(io.writeFileSync).not.toHaveBeenCalled();
   });
 
-  test("propagates a rename failure", () => {
+  test("propagates a rename failure and removes its temp file", () => {
+    const unlinkSync = vi.fn();
     const io: ProjectIo = {
       ...fakeIo([]),
       renameSync: () => {
         throw new Error("read-only");
       },
+      unlinkSync,
     };
     expect(() => writeProject("/r", "web", io)).toThrow("read-only");
+    expect(unlinkSync).toHaveBeenCalledWith(`/r/${PROJECT_FILE}.test-uuid.tmp`);
   });
 });
 
