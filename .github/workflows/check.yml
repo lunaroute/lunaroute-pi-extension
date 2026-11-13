@@ -38,6 +38,7 @@ jobs:
           src/index.ts
           src/login.ts
           src/lunaroute.ts
+          src/project.ts
           src/settings-ui.ts
           src/settings.ts
           src/usage.ts
