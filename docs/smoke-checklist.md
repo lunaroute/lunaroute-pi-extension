@@ -135,3 +135,25 @@ workflow enforces the line's presence and shape via `scripts/release-tag.mjs`
 before `npm publish` runs; a tag whose commit lacks a valid smoke line fails
 the release. Enforcement begins with the first release tagged after
 2026-10-22 (v0.18.1, the release that ships this gate).
+
+### 0.19.0 — 2026-11-13 (`exceptions`)
+
+Ran from the headless agent session that built kata ga6g (no TTY):
+
+- Headless items re-run and green: gateway catalog (64 entries,
+  `glm-5.3-flash` present), hosted MCP `tools/list` (the six tools),
+  `npm run check`, `node scripts/pack-assert.mjs` (14 files).
+- New: a production chat completion carrying the attribution triple **and**
+  `LUNAROUTE-PROJECT-ID: ga6g-smoke` returns 200 — the gateway accepts the
+  project header (recorded here because 0.19.0 introduces it).
+
+Left open, hence `exceptions`:
+
+- Every *Pending (need a TTY / browser)* item above — no interactive session
+  in this run.
+- **Gateway logs**: no server log access from here, so the attribution
+  headers were confirmed only by the 200 response, not read back.
+- **Dashboard project split**: not observable yet — the usage API accepts
+  `group_by=model|session|key` only and returns no project field, so a
+  `LUNAROUTE-PROJECT-ID` cannot be seen in usage on this deployment. The
+  extension sends the header; the server-side grouping is still owed.
