@@ -4,4 +4,4 @@
 .worktrees/
 # roborev snapshots
 /.roborev/
-node_modules/
+node_modules

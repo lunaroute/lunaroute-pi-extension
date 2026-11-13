@@ -199,7 +199,21 @@ opens the settings UI below, *Refresh models* (or `/lunaroute models-refresh`)
 reloads the model catalog from LunaRoute without a restart, and *Usage* (or
 `/lunaroute usage`) prints this period's usage. A refresh that
 fails (network down, rejected key, timeout) is reported as an error and the
-last known catalog stays in use. The settings UI, interactive mode only:
+last known catalog stays in use.
+
+### Project attribution
+
+`/lunaroute project <name>` records a [LunaRoute project](https://docs.lunaroute.com/concepts/projects-and-orgs/)
+for the current repository in `<git root>/.lunaroute.json`, and every request
+the extension sends (model calls and LunaRoute MCP tools) carries it as
+`LUNAROUTE-PROJECT-ID`, so the dashboard can split usage per app, environment
+or team. Commit the file to share the label with everyone who checks that repo
+out. `/lunaroute project` with no name shows the current value and offers the
+repository folder name; `/lunaroute project clear` (or `off`) removes it.
+Names are 1–128 printable ASCII characters, and a repo without the file sends
+the same headers as before. System One classifier calls are not tagged.
+
+The settings UI, interactive mode only:
 
 - **MCP tools** — on/off. Off skips the hosted LunaRoute MCP registration
   (a server you configured yourself is always left alone).

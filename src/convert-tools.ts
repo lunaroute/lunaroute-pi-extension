@@ -4,6 +4,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { agentDirFromEnv, buildAttributionHeaders, resolveMcpUrl } from "./lunaroute.js";
+import { projectHeaders, readSessionProject } from "./project.js";
 import {
 	createLunarouteMcpClient,
 	spillFullOutput,
@@ -487,10 +488,11 @@ export async function registerConvertTools(
 
 	const client = createLunarouteMcpClient({
 		url: resolveMcpUrl(deps.env),
-		headers: {
+		headers: () => ({
 			"LUNAROUTE-API-KEY": deps.key,
 			...buildAttributionHeaders(deps.version, deps.sessionId),
-		},
+			...projectHeaders(readSessionProject()),
+		}),
 		fetchImpl: deps.fetchImpl ?? (fetch as FetchLike),
 	});
 	// Swap the shared client BEFORE catalog discovery: after a key rotation,

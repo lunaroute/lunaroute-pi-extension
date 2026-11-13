@@ -5,6 +5,7 @@ import {
 	buildSettingsItems,
 	createSettingChangeApplier,
 	runUsageCommand,
+	runProjectCommand,
 	registerLunarouteSettingsCommand,
 	type SettingsCommandDeps,
 } from "../src/settings-ui.js";
@@ -12,6 +13,7 @@ import { _resetImageToolsState, registerImageTools } from "../src/image-tools.js
 import { _resetInsightsState, isInsightsOn } from "../src/usage.js";
 import { _resetConvertToolsState, registerConvertTools } from "../src/convert-tools.js";
 import { _resetWebToolsState, registerWebTools, type FetchLike } from "../src/web-tools.js";
+import type { ProjectIo } from "../src/project.js";
 
 // keyHint/getSettingsListTheme read pi's global theme — initialize like the host does.
 initTheme("dark");
@@ -959,5 +961,109 @@ describe("usageInsights setting row", () => {
 		await applier("usageInsights", "on");
 		expect(isInsightsOn()).toBe(false);
 		vi.unstubAllEnvs();
+	});
+});
+
+// ============================================================================
+// /lunaroute project (kata ga6g)
+// ============================================================================
+
+function projectIo(files: Record<string, string> = {}): { io: ProjectIo; files: Record<string, string> } {
+	const store = { ...files };
+	const io: ProjectIo = {
+		existsSync: (p) => p === "/repo/.git" || p in store,
+		readFileSync: (p) => {
+			if (p in store) return store[p];
+			throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+		},
+		writeFileSync: (p, data) => {
+			store[p] = data;
+		},
+		renameSync: (from, to) => {
+			store[to] = store[from] ?? "";
+			delete store[from];
+		},
+		randomUUID: () => "test-uuid",
+	};
+	return { io, files: store };
+}
+
+const PROJECT_PATH = "/repo/.lunaroute.json";
+const newCtx = (answers: { select?: string; input?: string } = {}, hasUI = true) => ({
+	cwd: "/repo",
+	hasUI,
+	ui: {
+		notify: vi.fn(),
+		select: vi.fn(async () => answers.select),
+		input: vi.fn(async () => answers.input),
+	},
+});
+
+describe("/lunaroute project", () => {
+	test("sets the name and reports the file path", async () => {
+		const { io, files } = projectIo();
+		const ctx = newCtx();
+		await runProjectCommand(ctx, "lunaroute-web", io);
+		expect(files[PROJECT_PATH]).toBe('{\n  "project": "lunaroute-web"\n}\n');
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(PROJECT_PATH), "info");
+	});
+
+	test("refuses an invalid name and writes nothing", async () => {
+		const { io, files } = projectIo();
+		const ctx = newCtx();
+		await runProjectCommand(ctx, "caf\u00e9", io);
+		expect(files[PROJECT_PATH]).toBeUndefined();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("printable ASCII"), "warning");
+	});
+
+	test("reports a write failure instead of claiming success", async () => {
+		const { io } = projectIo();
+		io.renameSync = () => {
+			throw new Error("read-only file system");
+		};
+		const ctx = newCtx();
+		await runProjectCommand(ctx, "web", io);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("read-only file system"), "error");
+	});
+
+	test("bare form offers the folder name and writes the pick", async () => {
+		const { io, files } = projectIo();
+		const ctx = newCtx({ select: "repo" });
+		await runProjectCommand(ctx, "", io);
+		expect(ctx.ui.select).toHaveBeenCalledWith("Project for this repo", ["repo", "Enter another name…"]);
+		expect(files[PROJECT_PATH]).toBe('{\n  "project": "repo"\n}\n');
+	});
+
+	test("bare form offers the current value first and lets the user type another name", async () => {
+		const { io, files } = projectIo({ [PROJECT_PATH]: '{"project":"web"}' });
+		const ctx = newCtx({ select: "Enter another name…", input: "billing" });
+		await runProjectCommand(ctx, "", io);
+		expect(ctx.ui.select).toHaveBeenCalledWith("Project for this repo", ["web", "repo", "Enter another name…"]);
+		expect(ctx.ui.input).toHaveBeenCalledWith("Project name");
+		expect(files[PROJECT_PATH]).toBe('{\n  "project": "billing"\n}\n');
+	});
+
+	test("bare form writes nothing when the user cancels", async () => {
+		const { io, files } = projectIo();
+		const ctx = newCtx();
+		await runProjectCommand(ctx, "", io);
+		expect(files[PROJECT_PATH]).toBeUndefined();
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+	});
+
+	test("bare form without a UI only reports", async () => {
+		const { io, files } = projectIo({ [PROJECT_PATH]: '{"project":"web"}' });
+		const ctx = newCtx({}, false);
+		await runProjectCommand(ctx, "", io);
+		expect(ctx.ui.select).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("web"), "info");
+		expect(files[PROJECT_PATH]).toBe('{"project":"web"}');
+	});
+
+	test("clear drops the key", async () => {
+		const { io, files } = projectIo({ [PROJECT_PATH]: '{"project":"web"}' });
+		const ctx = newCtx();
+		await runProjectCommand(ctx, "clear", io);
+		expect(files[PROJECT_PATH]).toBe("{}\n");
 	});
 });

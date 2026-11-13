@@ -14,6 +14,7 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type TSchema } from "typebox";
 import { buildAttributionHeaders, resolveMcpUrl } from "./lunaroute.js";
+import { projectHeaders, readSessionProject } from "./project.js";
 import {
 	DEFAULT_SETTINGS,
 	readSettings,
@@ -94,7 +95,10 @@ export interface LunarouteMcpClient {
 
 export interface McpClientOptions {
 	url: string;
-	headers: Record<string, string>;
+	/** Static map, or a function re-evaluated on every RPC so a value that can
+	 * change mid-session (the repo project, kata ga6g) reaches tools that were
+	 * registered earlier. */
+	headers: Record<string, string> | (() => Record<string, string>);
 	fetchImpl: FetchLike;
 	requestTimeoutMs?: number;
 }
@@ -147,13 +151,14 @@ export function createLunarouteMcpClient(opts: McpClientOptions): LunarouteMcpCl
 
 	async function rpc(method: string, params?: unknown, signal?: AbortSignal): Promise<unknown> {
 		const id = nextId++;
+		const attrs = typeof opts.headers === "function" ? opts.headers() : opts.headers;
 		const response = await opts.fetchImpl(opts.url, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
 				Accept: "application/json, text/event-stream",
 				...(mcpSessionId !== undefined && { "Mcp-Session-Id": mcpSessionId }),
-				...opts.headers,
+				...attrs,
 			},
 			body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
 			signal,
@@ -637,10 +642,11 @@ export async function registerWebTools(
 	// credential swap. Construction is side-effect-free (no I/O).
 	const client = createLunarouteMcpClient({
 		url: resolveMcpUrl(deps.env),
-		headers: {
+		headers: () => ({
 			"LUNAROUTE-API-KEY": deps.key,
 			...buildAttributionHeaders(deps.version, deps.sessionId),
-		},
+			...projectHeaders(readSessionProject()),
+		}),
 		fetchImpl: deps.fetchImpl ?? (fetch as FetchLike),
 	});
 	currentWebClient.client = client;
