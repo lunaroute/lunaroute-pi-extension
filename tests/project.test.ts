@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import {
   PROJECT_FILE,
@@ -70,11 +73,30 @@ describe("readProject hardening", () => {
     expect(io.readFileSync).not.toHaveBeenCalled();
   });
 
-  test("rejects a file that is not valid UTF-8 anywhere", () => {
-    // Node's utf8 decoder substitutes U+FFFD for invalid bytes, so a hostile
-    // file can stay parseable JSON while being undecodable.
-    const files = { "/r/.lunaroute.json": '{"project":"web","note":"\uFFFD"}' };
-    expect(readProject("/r", fakeIo([], files))).toBeUndefined();
+  test("rejects bytes that are not valid UTF-8", () => {
+    // Decoded leniently, invalid bytes become U+FFFD and can still parse as
+    // JSON — the file must be rejected instead.
+    const dir = mkdtempSync(join(tmpdir(), "ga6g-utf8-"));
+    try {
+      writeFileSync(join(dir, ".lunaroute.json"), Buffer.from([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d]));
+      expect(readProject(dir)).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts a literal U+FFFD in an otherwise valid file", () => {
+    const body = '{"project":"web","note":"\uFFFD"}';
+    const io = { ...fakeIo([], { "/r/.lunaroute.json": body }), readFileBytes: () => Buffer.from(body, "utf8") };
+    expect(readProject("/r", io)).toBe("web");
+  });
+
+  test("rejects a symlinked or non-regular project file", () => {
+    const files = { "/r/.lunaroute.json": '{"project":"web"}' };
+    const symlink = { ...fakeIo([], files), lstatSync: () => ({ size: 20, isFile: () => true, isSymbolicLink: () => true }) };
+    expect(readProject("/r", symlink)).toBeUndefined();
+    const device = { ...fakeIo([], files), lstatSync: () => ({ size: 0, isFile: () => false, isSymbolicLink: () => false }) };
+    expect(readProject("/r", device)).toBeUndefined();
   });
 });
 

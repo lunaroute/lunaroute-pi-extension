@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SettingsIo } from "./settings.js";
 
@@ -22,8 +22,10 @@ const RESERVED_NAMES = new Set(["clear", "off"]);
 export interface ProjectIo extends SettingsIo {
   existsSync(path: string): boolean;
   /** Optional so test fakes stay small; the default implementation provides
-   * both. */
+   * all of them. */
   statSync?(path: string): { size: number };
+  lstatSync?(path: string): { size: number; isFile(): boolean; isSymbolicLink(): boolean };
+  readFileBytes?(path: string): Uint8Array;
   unlinkSync?(path: string): void;
 }
 
@@ -31,14 +33,16 @@ export interface ProjectIo extends SettingsIo {
  * a hostile repo from making every request read and parse megabytes. */
 export const MAX_PROJECT_FILE_BYTES = 4096;
 
-/** Node's utf8 decoder substitutes U+FFFD for undecodable bytes, which can
- * still yield valid JSON; treat the file as unreadable instead. */
-const REPLACEMENT_CHAR = "\uFFFD";
+/** Lenient decoding turns undecodable bytes into U+FFFD, which can still
+ * parse as JSON, so bytes are decoded strictly. */
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 
 export const defaultProjectIo: ProjectIo = {
   existsSync,
   statSync,
+  lstatSync,
   unlinkSync,
+  readFileBytes: (path) => readFileSync(path),
   readFileSync: (path) => readFileSync(path, "utf8"),
   writeFileSync,
   renameSync,
@@ -86,9 +90,13 @@ export function readProject(root: string, io: ProjectIo = defaultProjectIo): str
   let raw: string;
   let parsed: unknown;
   try {
+    // lstat, not stat: a repo can commit a symlink to /dev/zero or to a file
+    // outside the checkout, and a device reports size 0.
+    const link = io.lstatSync?.(target);
+    if (link && (link.isSymbolicLink() || !link.isFile())) return undefined;
     if (io.statSync && io.statSync(target).size > MAX_PROJECT_FILE_BYTES) return undefined;
-    raw = io.readFileSync(target);
-    if (raw.length > MAX_PROJECT_FILE_BYTES || raw.includes(REPLACEMENT_CHAR)) return undefined;
+    raw = io.readFileBytes ? strictUtf8.decode(io.readFileBytes(target)) : io.readFileSync(target);
+    if (raw.length > MAX_PROJECT_FILE_BYTES) return undefined;
     parsed = JSON.parse(raw);
   } catch {
     return undefined;
