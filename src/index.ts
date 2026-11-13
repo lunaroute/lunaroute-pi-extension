@@ -23,7 +23,7 @@ import {
   type LunarouteProviderConfig,
   type WireApi,
 } from "./lunaroute.js";
-import { projectHeaders, readSessionProject } from "./project.js";
+import { findProjectRoot, projectHeaders, readSessionProject, setSessionRoot } from "./project.js";
 import { lunarouteOAuth } from "./login.js";
 import { createRefreshModels } from "./discovery.js";
 import { createLunarouteMcpClient, registerWebTools } from "./web-tools.js";
@@ -196,6 +196,7 @@ export default function lunarouteExtension(pi: ExtensionAPI, version: string = V
       LUNAROUTE_DEFAULT_PROVIDER_RETRIES,
       loadBuiltinApi,
       () => readSettings(process.env).providerRetries,
+      () => readSessionProject(),
     ),
     // Re-register on login so a rotated key takes effect without restarting
     // Pi: dispose first (the adapter throws on a duplicate server name), then
@@ -267,6 +268,10 @@ export default function lunarouteExtension(pi: ExtensionAPI, version: string = V
 
   pi.on("session_start", async (_event, ctx) => {
     currentModel = ctx.model;
+    // Repo project (kata ga6g): resolved from the session directory, refreshed
+    // on resume/fork. Before this line no request carries a project.
+    // Hosts (and test fakes) that omit cwd must not crash session_start.
+    setSessionRoot(typeof ctx.cwd === "string" && ctx.cwd ? findProjectRoot(ctx.cwd) : undefined);
     keyRejectedNotified = false;
     // Session stats are per session, so reset them before any early return
     // (a logged-out session must not keep the previous session's numbers).

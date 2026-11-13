@@ -2,8 +2,9 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Api, Credential, Model, OpenAICompletionsCompat, ProviderStreams, ThinkingLevelMap } from "@earendil-works/pi-ai";
+import type { Api, Credential, Model, OpenAICompletionsCompat, ProviderHeaders, ProviderStreams, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import type { ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import { PROJECT_HEADER, projectHeaders } from "./project.js";
 
 export const LUNAROUTE_ENV_AGENT_DIR = "PI_CODING_AGENT_DIR";
 
@@ -471,12 +472,24 @@ export function buildRetryingStreamSimple(
   defaultRetries: number,
   loadApi: (api: WireApi) => ProviderStreams,
   getConfiguredRetries?: () => number,
+  getProject?: () => string | undefined,
 ): NonNullable<ProviderConfig["streamSimple"]> {
   return (model, context, options) => {
     const api = loadApi(model.api as WireApi);
     // Precedence: pi's explicit setting (incl. 0) > lunaroute.json > constant.
     const maxRetries = options?.maxRetries ?? getConfiguredRetries?.() ?? defaultRetries;
     const merged = { ...options, maxRetries };
+    // The repo project (kata ga6g) rides in as a literal request header: it
+    // must never reach provider *config*, which pi resolves through
+    // resolveConfigValue (a leading "!" is execSync). Absent = untouched.
+    const project = projectHeaders(getProject?.());
+    if (Object.keys(project).length > 0) {
+      const headers: ProviderHeaders = { ...options?.headers };
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase() === PROJECT_HEADER.toLowerCase()) delete headers[key];
+      }
+      merged.headers = { ...headers, ...project };
+    }
     // Those four fields only exist on the per-api option types, not on
     // StreamOptions/SimpleStreamOptions.
     const full = merged as {
