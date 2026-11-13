@@ -1,9 +1,21 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
 import { LUNAROUTE_PROVIDER, buildAttributionHeaders, resolveMcpUrl } from "./lunaroute.js";
-import { projectHeaders, readSessionProject } from "./project.js";
+import { basename } from "node:path";
+import {
+	clearProject,
+	defaultProjectIo,
+	findProjectRoot,
+	projectFilePath,
+	projectHeaders,
+	readProject,
+	readSessionProject,
+	validateProjectName,
+	writeProject,
+	type ProjectIo,
+} from "./project.js";
 import { PROVIDER_RETRIES_MAX, readSettings, settingsPath, writeSettings, usageInsightsEnabled, type LunarouteSettings } from "./settings.js";
 import { getRegisteredImageToolNames, invalidateImageToolRegistrations, registerImageTools } from "./image-tools.js";
 import { getRegisteredConvertToolNames, invalidateConvertToolRegistrations, registerConvertTools } from "./convert-tools.js";
@@ -267,8 +279,12 @@ export function registerLunarouteSettingsCommand(
 				await runUsageCommand(ctx, deps, getQueueStats);
 				return;
 			}
+			if (sub === "project" || sub.startsWith("project ")) {
+				await runProjectCommand(ctx, sub.slice("project".length).trim());
+				return;
+			}
 			if (sub) {
-				ctx.ui.notify(`Unknown option "${sub}" — use /lunaroute settings, models-refresh or usage`, "info");
+				ctx.ui.notify(`Unknown option "${sub}" — use /lunaroute settings, models-refresh, usage or project`, "info");
 				return;
 			}
 			if (!ctx.hasUI) return; // print/json modes: nothing to render
@@ -483,6 +499,76 @@ function defaultUsageClient(key: string, deps: SettingsCommandDeps): LunarouteMc
 		}),
 		fetchImpl: fetch,
 	});
+}
+
+/** `/lunaroute project [<name>|clear|off]` (kata ga6g): the repo's project
+ * label, persisted in `<git root>/.lunaroute.json` and sent on every request.
+ * No login needed — it is a local file. */
+export async function runProjectCommand(
+	ctx: { cwd: string; hasUI: boolean; ui: Pick<ExtensionUIContext, "notify" | "select" | "input"> },
+	arg: string,
+	io: ProjectIo = defaultProjectIo,
+): Promise<void> {
+	const root = findProjectRoot(ctx.cwd, io);
+	const path = projectFilePath(root);
+	const word = arg.trim();
+
+	const apply = (candidate: string): void => {
+		const result = validateProjectName(candidate);
+		if (!result.ok) {
+			ctx.ui.notify(result.reason, "warning");
+			return;
+		}
+		try {
+			writeProject(root, result.name, io);
+			ctx.ui.notify(`LunaRoute project "${result.name}" set in ${path}`, "info");
+		} catch (err) {
+			ctx.ui.notify(`Could not write ${path}: ${err instanceof Error ? err.message : String(err)}`, "error");
+		}
+	};
+
+	if (word.toLowerCase() === "clear" || word.toLowerCase() === "off") {
+		try {
+			clearProject(root, io);
+			ctx.ui.notify(`LunaRoute project cleared in ${path}`, "info");
+		} catch (err) {
+			ctx.ui.notify(`Could not write ${path}: ${err instanceof Error ? err.message : String(err)}`, "error");
+		}
+		return;
+	}
+	if (word) {
+		apply(word);
+		return;
+	}
+
+	const current = readProject(root, io);
+	ctx.ui.notify(
+		current ? `LunaRoute project: ${current}  (${path})` : `No LunaRoute project set for ${root}`,
+		"info",
+	);
+	if (!ctx.hasUI) return;
+
+	// The 0.84.x UI has no pre-filled input, so the folder name is a pickable
+	// option rather than text already in the field.
+	const folder = basename(root);
+	const options: string[] = [];
+	if (current) options.push(current);
+	if (folder !== current && validateProjectName(folder).ok) options.push(folder);
+	let choice: string | undefined;
+	if (options.length === 0) {
+		choice = "Enter another name…";
+	} else {
+		options.push("Enter another name…");
+		choice = await ctx.ui.select("Project for this repo", options);
+	}
+	if (choice === undefined) return;
+	if (choice === "Enter another name…") {
+		const typed = (await ctx.ui.input("Project name")) ?? "";
+		if (typed.trim() === "") return;
+		apply(typed);
+		return;
+	}
+	apply(choice);
 }
 
 /** `/lunaroute usage`: the on-demand usage report.

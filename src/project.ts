@@ -23,7 +23,7 @@ export interface ProjectIo extends SettingsIo {
   existsSync(path: string): boolean;
 }
 
-const defaultProjectIo: ProjectIo = {
+export const defaultProjectIo: ProjectIo = {
   existsSync,
   readFileSync: (path) => readFileSync(path, "utf8"),
   writeFileSync,
